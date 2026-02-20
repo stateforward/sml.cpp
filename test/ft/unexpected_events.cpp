@@ -9,12 +9,18 @@
 #include <map>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 namespace sml = boost::sml;
 
 struct e1 {};
 struct e2 {};
 struct e3 {};
+
+template <class T, class = void>
+struct has_out_member : std::false_type {};
+template <class T>
+struct has_out_member<T, decltype((void)std::declval<T>().out, void())> : std::true_type {};
 
 const auto idle = sml::state<class idle>;
 const auto s1 = sml::state<class s1>;
@@ -170,6 +176,56 @@ test unexpected_any_event = [] {
   expect(1 == c_.ue_calls[calls::unexpected_event_e2]);
   expect(1 == c_.ue_calls[calls::unexpected_event_any]);
   expect(sm.is(X));
+};
+
+test unexpected_any_unknown_event = [] {
+  struct e_unknown {
+    int *out = nullptr;
+  };
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+        *idle + event<e1> = is_handled,
+         idle + unexpected_event<_> / [](const auto &ev) {
+           if constexpr (has_out_member<decltype(ev)>::value) {
+             if (ev.out) {
+               *ev.out = 42;
+             }
+           }
+         } = X
+      );
+      // clang-format on
+    }
+  };
+
+  int out = 0;
+  sml::sm<c> sm;
+  sm.process_event(e_unknown{&out});
+  expect(sm.is(sml::X));
+  expect(42 == out);
+};
+
+test unexpected_any_known_event = [] {
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+        *idle + event<e1> = is_handled,
+         is_handled + unexpected_event<_> = X
+      );
+      // clang-format on
+    }
+  };
+
+  sml::sm<c> sm;
+  sm.process_event(e1{});
+  expect(sm.is(is_handled));
+
+  sm.process_event(e1{});
+  expect(sm.is(sml::X));
 };
 
 test unexpected_event_orthogonal_region = [] {

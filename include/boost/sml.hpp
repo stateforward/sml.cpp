@@ -1253,9 +1253,18 @@ struct transitions<T> {
 };
 template <>
 struct transitions<aux::true_type> {
-  template <class TEvent, class SM, class TDeps, class TSubs>
+  template <class TEvent, class SM, class TDeps, class TSubs,
+            __BOOST_SML_REQUIRES(!aux::is_base_of<internal_event, aux::remove_const_t<aux::remove_reference_t<TEvent>>>::value)>
   static bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state) {
-    sm.process_internal_event(unexpected_event<TEvent>{event}, deps, subs, current_state);
+    const auto handled = sm.process_internal_event(unexpected_event<TEvent>{event}, deps, subs, current_state);
+    if (!handled) {
+      sm.process_internal_event(unexpected_event<_, TEvent>{event}, deps, subs, current_state);
+    }
+    return false;
+  }
+  template <class TEvent, class SM, class TDeps, class TSubs,
+            __BOOST_SML_REQUIRES(aux::is_base_of<internal_event, aux::remove_const_t<aux::remove_reference_t<TEvent>>>::value)>
+  static bool execute(const TEvent &, SM &, TDeps &, TSubs &, typename SM::state_t &) {
     return false;
   }
 };
