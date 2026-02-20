@@ -1072,8 +1072,8 @@ struct event_type<exception<TEvent>> {
 template <class TEvent, class T>
 struct event_type<unexpected_event<T, TEvent>> {
   using event_t = TEvent;
-  using generic_t = unexpected_event<T>;
-  using mapped_t = void;
+  using generic_t = unexpected_event<_>;
+  using mapped_t = unexpected_event<T>;
 };
 template <class TEvent, class T>
 struct event_type<on_entry<T, TEvent>> {
@@ -1255,7 +1255,9 @@ template <>
 struct transitions<aux::true_type> {
   template <class TEvent, class SM, class TDeps, class TSubs>
   static bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state) {
-    sm.process_internal_event(unexpected_event<TEvent>{event}, deps, subs, current_state);
+    if (!aux::is_base_of<unexpected, TEvent>::value) {
+      sm.process_internal_event(unexpected_event<TEvent>{event}, deps, subs, current_state);
+    }
     return false;
   }
 };
