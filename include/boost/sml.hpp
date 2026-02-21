@@ -612,7 +612,7 @@ template <template <class...> class T, class D>
 using apply_t = typename apply<T, D>::type;
 template <int, class T>
 struct tuple_type {
-  constexpr explicit tuple_type(const T &object) : value(object) {}
+  constexpr explicit tuple_type(T object) : value(object) {}
   T value;
 };
 template <class, class...>
@@ -846,9 +846,13 @@ template <class TExpr>
 struct zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>
     : zero_wrapper_impl<TExpr, function_traits_t<decltype(&TExpr::operator())>> {
   using type = TExpr;
+  constexpr explicit zero_wrapper(const TExpr &expr) : expr{expr} {}
   template <class... Ts>
-  constexpr zero_wrapper(Ts &&...) {}
-  const TExpr &get() const { return reinterpret_cast<const TExpr &>(*this); }
+  constexpr auto operator()(Ts... args) const { return expr(args...); }
+  const TExpr &get() const { return expr; }
+
+ private:
+  TExpr expr;
 };
 namespace detail {
 template <class, int N, int... Ns>
@@ -2990,7 +2994,7 @@ struct transition<state<S1>, state<S2>, front::event<E>, always, A> {
   using guard = always;
   using action = A;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<A, E>>;
-  constexpr transition(const always &, const A &a) : a(a) {}
+  constexpr transition(always, const A &a) : a(a) {}
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state, aux::true_type) {
     sm.process_internal_event(back::on_exit<back::_, TEvent>{event}, deps, subs, current_state);
@@ -3021,7 +3025,7 @@ struct transition<state<internal>, state<S2>, front::event<E>, always, A> {
   using guard = always;
   using action = A;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<A, E>>;
-  constexpr transition(const always &, const A &a) : a(a) {}
+  constexpr transition(always, const A &a) : a(a) {}
   template <class TEvent, class SM, class TDeps, class TSubs, class... Ts>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &, Ts &&...) {
     call<TEvent, args_t<A, TEvent>, typename SM::logger_t>::execute(a, event, sm, deps, subs);
@@ -3039,7 +3043,7 @@ struct transition<state<S1>, state<S2>, front::event<E>, G, none> {
   using guard = G;
   using action = none;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<G, E>>;
-  constexpr transition(const G &g, const none &) : g(g) {}
+  constexpr transition(const G &g, none) : g(g) {}
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state, aux::true_type) {
     if (call<TEvent, args_t<G, TEvent>, typename SM::logger_t>::execute(g, event, sm, deps, subs)) {
@@ -3074,7 +3078,7 @@ struct transition<state<internal>, state<S2>, front::event<E>, G, none> {
   using guard = G;
   using action = none;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<G, E>>;
-  constexpr transition(const G &g, const none &) : g(g) {}
+  constexpr transition(const G &g, none) : g(g) {}
   template <class TEvent, class SM, class TDeps, class TSubs, class... Ts>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &, Ts &&...) {
     return call<TEvent, args_t<G, TEvent>, typename SM::logger_t>::execute(g, event, sm, deps, subs);
@@ -3091,7 +3095,7 @@ struct transition<state<S1>, state<S2>, front::event<E>, always, none> {
   using guard = always;
   using action = none;
   using deps = aux::type_list<>;
-  constexpr transition(const always &, const none &) {}
+  constexpr transition(always, none) {}
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state, aux::true_type) {
     sm.process_internal_event(back::on_exit<back::_, TEvent>{event}, deps, subs, current_state);
@@ -3120,7 +3124,7 @@ struct transition<state<internal>, state<S2>, front::event<E>, always, none> {
   using guard = always;
   using action = none;
   using deps = aux::type_list<>;
-  constexpr transition(const always &, const none &) {}
+  constexpr transition(always, none) {}
   template <class TEvent, class SM, class TDeps, class TSubs, class... Ts>
   constexpr bool execute(const TEvent &, SM &, TDeps &, TSubs &, typename SM::state_t &, Ts &&...) {
     return true;
