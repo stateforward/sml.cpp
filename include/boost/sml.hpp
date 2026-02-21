@@ -612,7 +612,7 @@ template <template <class...> class T, class D>
 using apply_t = typename apply<T, D>::type;
 template <int, class T>
 struct tuple_type {
-  constexpr explicit tuple_type(T object) : value(object) {}
+  constexpr explicit tuple_type(const T &object) : value(object) {}
   T value;
 };
 template <class, class...>
@@ -838,19 +838,31 @@ struct zero_wrapper<R (*)(TArgs...) noexcept, T> {
 template <class, class>
 struct zero_wrapper_impl;
 template <class TExpr, class... TArgs>
-struct zero_wrapper_impl<zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>, type_list<TArgs...>> {
+struct zero_wrapper_impl<TExpr, type_list<TArgs...>> {
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) ||                                                \
+    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)))
   using wrapper_type = zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>;
   constexpr auto operator()(TArgs... args) const { return static_cast<const wrapper_type *>(this)->get()(args...); }
+#else
+  constexpr auto operator()(TArgs... args) const { return reinterpret_cast<const TExpr &>(*this)(args...); }
+#endif
   __BOOST_SML_ZERO_SIZE_ARRAY(byte);
 };
 template <class TExpr>
 struct zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>
-    : zero_wrapper_impl<zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>,
+    : zero_wrapper_impl<TExpr,
                         function_traits_t<decltype(&TExpr::operator())>> {
   using type = TExpr;
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) ||                                                \
+    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)))
   constexpr explicit zero_wrapper(const TExpr &expr) : expr(expr) {}
   const TExpr &get() const { return expr; }
   TExpr expr;
+#else
+  template <class... Ts>
+  constexpr zero_wrapper(Ts &&...) {}
+  const TExpr &get() const { return reinterpret_cast<const TExpr &>(*this); }
+#endif
 };
 namespace detail {
 template <class, int N, int... Ns>
