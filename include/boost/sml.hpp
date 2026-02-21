@@ -23,6 +23,12 @@
   }                             \
   }                             \
   }
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) || \
+    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)))
+#define __BOOST_SML_SANITIZER_BUILD 1
+#else
+#define __BOOST_SML_SANITIZER_BUILD 0
+#endif
 #if defined(__clang__)
 #define __BOOST_SML_UNUSED __attribute__((unused))
 #define __BOOST_SML_VT_INIT \
@@ -839,8 +845,7 @@ template <class, class>
 struct zero_wrapper_impl;
 template <class TExpr, class... TArgs>
 struct zero_wrapper_impl<TExpr, type_list<TArgs...>> {
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) ||                                                \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)))
+#if __BOOST_SML_SANITIZER_BUILD
   using wrapper_type = zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>;
   constexpr auto operator()(TArgs... args) const { return static_cast<const wrapper_type *>(this)->get()(args...); }
 #else
@@ -853,8 +858,7 @@ struct zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>
     : zero_wrapper_impl<TExpr,
                         function_traits_t<decltype(&TExpr::operator())>> {
   using type = TExpr;
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) ||                                                \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)))
+#if __BOOST_SML_SANITIZER_BUILD
   constexpr explicit zero_wrapper(const TExpr &expr) : expr(expr) {}
   const TExpr &get() const { return expr; }
   TExpr expr;
@@ -3209,6 +3213,7 @@ BOOST_SML_NAMESPACE_END
 #undef __BOOST_SML_ZERO_SIZE_ARRAY
 #undef __BOOST_SML_ZERO_SIZE_ARRAY_CREATE
 #undef __BOOST_SML_TEMPLATE_KEYWORD
+#undef __BOOST_SML_SANITIZER_BUILD
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #elif defined(__GNUC__)
