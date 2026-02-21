@@ -838,20 +838,18 @@ struct zero_wrapper<R (*)(TArgs...) noexcept, T> {
 template <class, class>
 struct zero_wrapper_impl;
 template <class TExpr, class... TArgs>
-struct zero_wrapper_impl<TExpr, type_list<TArgs...>> {
-  constexpr auto operator()(TArgs... args) const { return reinterpret_cast<const TExpr &>(*this)(args...); }
+struct zero_wrapper_impl<zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>, type_list<TArgs...>> {
+  using wrapper_type = zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>;
+  constexpr auto operator()(TArgs... args) const { return static_cast<const wrapper_type *>(this)->get()(args...); }
   __BOOST_SML_ZERO_SIZE_ARRAY(byte);
 };
 template <class TExpr>
 struct zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>
-    : zero_wrapper_impl<TExpr, function_traits_t<decltype(&TExpr::operator())>> {
+    : zero_wrapper_impl<zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>,
+                        function_traits_t<decltype(&TExpr::operator())>> {
   using type = TExpr;
-  constexpr explicit zero_wrapper(const TExpr &expr) : expr{expr} {}
-  template <class... Ts>
-  constexpr auto operator()(Ts... args) const { return expr(args...); }
+  constexpr explicit zero_wrapper(const TExpr &expr) : expr(expr) {}
   const TExpr &get() const { return expr; }
-
- private:
   TExpr expr;
 };
 namespace detail {
