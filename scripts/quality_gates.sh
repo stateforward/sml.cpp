@@ -259,7 +259,7 @@ run_tidy_gate() {
   local tidy_scan_dir
   while IFS= read -r -d '' file; do
     tidy_files+=("${file}")
-    ((tidy_count++))
+    tidy_count=$((tidy_count + 1))
   done < <(
     {
       for tidy_scan_dir in "${tidy_scan_dirs[@]}"; do
