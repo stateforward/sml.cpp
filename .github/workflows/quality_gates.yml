@@ -4,10 +4,15 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   quality_gates:
     name: Quality gates
     runs-on: ubuntu-latest
+    env:
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
 

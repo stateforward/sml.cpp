@@ -167,7 +167,6 @@ run_build() {
     -DSML_USE_EXCEPTIONS="${use_exceptions}"
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     -DCMAKE_CXX_FLAGS="${cxx_flags}"
-    -DCMAKE_CXX_FLAGS_DEBUG="${cxx_flags}"
   )
 
   if [[ -n "${CMAKE_GENERATOR}" ]]; then
@@ -191,7 +190,21 @@ run_format_gate() {
 
   local supports_werror=0
   local format_count=0
-  local file formatted
+  local file formatted diff_log
+  local -a format_dirs=("${REPO_ROOT}/example" "${REPO_ROOT}/test" "${REPO_ROOT}/include")
+  local -a format_scan_dirs=()
+  local scan_dir
+
+  for scan_dir in "${format_dirs[@]}"; do
+    if [[ -d "${scan_dir}" ]]; then
+      format_scan_dirs+=("${scan_dir}")
+    fi
+  done
+
+  if (( ${#format_scan_dirs[@]} == 0 )); then
+    echo "No source directories found for format check."
+    return 1
+  fi
   if "${CLANG_FORMAT_CMD}" --help 2>&1 | grep -q -- "--Werror"; then
     supports_werror=1
   fi
@@ -202,17 +215,19 @@ run_format_gate() {
       "${CLANG_FORMAT_CMD}" --dry-run --Werror "${file}"
     else
       formatted="$(mktemp)"
+      diff_log="$(mktemp)"
       "${CLANG_FORMAT_CMD}" "${file}" > "${formatted}"
-      diff -u "${file}" "${formatted}" >/tmp/quality_format_${$}.log || {
+      if ! diff -u "${file}" "${formatted}" > "${diff_log}"; then
         rm -f "${formatted}"
         echo "Formatting mismatch: ${file}" >&2
-        cat /tmp/quality_format_${$}.log
+        cat "${diff_log}"
+        rm -f "${diff_log}"
         return 1
-      }
-      rm -f "${formatted}"
+      fi
+      rm -f "${formatted}" "${diff_log}"
     fi
   done < <(
-    find "${REPO_ROOT}/example" "${REPO_ROOT}/test" \
+    find "${format_scan_dirs[@]}" \
       \( -name "*.hpp" -o -name "*.cpp" -o -name "*.h" \) -type f -print0 | sort -z
   )
 
@@ -236,14 +251,22 @@ run_tidy_gate() {
   local tidy_count=0
   local file
   local tidy_files=()
+  local -a tidy_scan_dirs=(
+    "${REPO_ROOT}/test/ft"
+    "${REPO_ROOT}/test/ut"
+    "${REPO_ROOT}/test/unit"
+  )
+  local tidy_scan_dir
   while IFS= read -r -d '' file; do
     tidy_files+=("${file}")
     ((tidy_count++))
   done < <(
     {
-      find "${REPO_ROOT}/test/ft" -mindepth 1 -maxdepth 1 -name "*.cpp" -type f -print0
-      find "${REPO_ROOT}/test/ut" -mindepth 1 -maxdepth 1 -name "*.cpp" -type f -print0
-      find "${REPO_ROOT}/test/unit" -mindepth 1 -maxdepth 1 -name "*.cpp" -type f -print0
+      for tidy_scan_dir in "${tidy_scan_dirs[@]}"; do
+        if [[ -d "${tidy_scan_dir}" ]]; then
+          find "${tidy_scan_dir}" -mindepth 1 -maxdepth 1 -name "*.cpp" -type f -print0
+        fi
+      done
     } | sort -z
   )
 
@@ -257,7 +280,7 @@ run_tidy_gate() {
     --warnings-as-errors=*
   )
 
-  if [[ "${CLANG_TIDY_CMD}" == "/opt/homebrew/opt/llvm/bin/clang-tidy" ]]; then
+  if [[ "${OSTYPE}" == "darwin"* ]] && command -v xcrun >/dev/null 2>&1; then
     local sdk_path
     sdk_path="$(xcrun --show-sdk-path 2>/dev/null || true)"
     if [[ -n "${sdk_path}" ]]; then
@@ -292,7 +315,7 @@ run_sanitizer_matrix() {
     run_build "sanitizer_thread" 20 ON ON OFF "${thread_flags}" -DSML_BUILD_BENCHMARKS=OFF
 
     if [[ "${COMPILER_FAMILY}" == "clang" ]]; then
-      local mem_flags="${BASE_CXX_FLAGS} -fno-omit-frame-pointer -fsanitize=memory -fno-sanitize-memory-track-origins=2 -fno-sanitize-recover=all"
+      local mem_flags="${BASE_CXX_FLAGS} -fno-omit-frame-pointer -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-sanitize-recover=all"
       run_build "sanitizer_memory" 20 ON ON OFF "${mem_flags}" -DSML_BUILD_BENCHMARKS=OFF
     fi
   fi
@@ -320,12 +343,11 @@ run_coverage_gate() {
   local coverage_report=""
   local used_tool=""
   local lcov_available=0
-  local gcovr_available=0
 
   if command -v lcov >/dev/null 2>&1; then
     lcov_available=1
   elif command -v gcovr >/dev/null 2>&1; then
-    gcovr_available=1
+    :
   else
     echo "Unable to collect coverage report (lcov or gcovr missing)." >&2
     return 1
@@ -361,10 +383,6 @@ run_coverage_gate() {
   fi
 
   if [[ -z "${coverage_percent}" ]] && command -v gcovr >/dev/null 2>&1; then
-    gcovr_available=1
-  fi
-
-  if [[ -z "${coverage_percent}" ]] && [[ "${gcovr_available}" -eq 1 ]]; then
     if gcovr --root "${REPO_ROOT}" "${coverage_dir}" --txt -j 1 \
       --gcov-executable "${gcov_cmd}" --gcov-ignore-errors all \
       >"${coverage_report_file}" 2>&1; then
@@ -388,14 +406,12 @@ run_coverage_gate() {
     return 1
   fi
 
-  if [[ "${used_tool}" == "gcovr" ]]; then
-    echo "${coverage_report}" > "${coverage_report_file}"
-  elif [[ "${used_tool}" == "lcov" ]]; then
-    echo "${coverage_report}" > "${coverage_report_file}"
-  else
+  if [[ -z "${used_tool}" ]]; then
     echo "Unknown coverage tool state after report generation." >&2
     return 1
   fi
+
+  echo "${coverage_report}" > "${coverage_report_file}"
 
   if [[ -z "${coverage_percent}" ]] || [[ "${coverage_percent}" == "--" ]]; then
     echo "Unable to parse coverage percentage." >&2
@@ -479,7 +495,7 @@ echo "compiler  : ${COMPILER_FAMILY}"
 echo "coverage  : ${COVERAGE_MIN}%"
 echo "lint      : enabled"
 echo "sanitizers: enabled"
-echo "coverage  : enabled"
+echo "coverage gate: enabled"
 echo "benchmarks: enabled"
 if [[ "${EXPERIMENTAL_SANITIZERS}" -eq 1 ]]; then
   echo "experimental sanitizers: enabled"
