@@ -75,7 +75,7 @@ resolve_coverage_gcov_tool() {
     return 0
   fi
 
-  local wrapper_path="${BUILD_ROOT}/coverage/.llvm-gcov-wrapper.sh"
+  local wrapper_path="${BUILD_ROOT}/.llvm-gcov-wrapper.sh"
   mkdir -p "${BUILD_ROOT}/coverage"
   printf '#!/usr/bin/env sh\n%s gcov "$@"\n' "${llvm_cov}" > "${wrapper_path}"
   chmod +x "${wrapper_path}"
