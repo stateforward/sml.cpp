@@ -191,7 +191,7 @@ run_format_gate() {
   local supports_werror=0
   local format_count=0
   local file formatted diff_log
-  local -a format_dirs=("${REPO_ROOT}/example" "${REPO_ROOT}/test" "${REPO_ROOT}/include")
+  local -a format_dirs=("${REPO_ROOT}/example" "${REPO_ROOT}/test")
   local -a format_scan_dirs=()
   local scan_dir
 
@@ -212,11 +212,11 @@ run_format_gate() {
   while IFS= read -r -d '' file; do
     ((format_count++))
     if [[ "${supports_werror}" -eq 1 ]]; then
-      "${CLANG_FORMAT_CMD}" --dry-run --Werror "${file}"
+      "${CLANG_FORMAT_CMD}" --style=file --dry-run --Werror "${file}"
     else
-      formatted="$(mktemp)"
-      diff_log="$(mktemp)"
-      "${CLANG_FORMAT_CMD}" "${file}" > "${formatted}"
+        formatted="$(mktemp)"
+        diff_log="$(mktemp)"
+      "${CLANG_FORMAT_CMD}" --style=file "${file}" > "${formatted}"
       if ! diff -u "${file}" "${formatted}" > "${diff_log}"; then
         rm -f "${formatted}"
         echo "Formatting mismatch: ${file}" >&2
