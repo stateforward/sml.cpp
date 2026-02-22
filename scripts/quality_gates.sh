@@ -440,7 +440,39 @@ run_benchmarks_gate() {
   start_section "benchmarks"
   local original_jobs="${JOBS}"
   JOBS=1
-  run_build "benchmarks" 17 ON OFF OFF "${BASE_CXX_FLAGS}" -DSML_BUILD_BENCHMARKS=ON -DSML_BUILD_TESTS=OFF -DSML_BUILD_EXAMPLES=OFF
+
+  local label="benchmarks"
+  local build_dir="${BUILD_ROOT}/${label}"
+  rm -rf "${build_dir}"
+  mkdir -p "${build_dir}"
+
+  local -a cmake_args=(
+    -S "${REPO_ROOT}"
+    -B "${build_dir}"
+    -DCMAKE_BUILD_TYPE=Debug
+    -DCMAKE_CXX_COMPILER="${CXX_BIN}"
+    -DCMAKE_CXX_STANDARD=17
+    -DSML_BUILD_TESTS=OFF
+    -DSML_BUILD_EXAMPLES=OFF
+    -DSML_BUILD_BENCHMARKS=ON
+    -DSML_USE_EXCEPTIONS=ON
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DCMAKE_CXX_FLAGS="${BASE_CXX_FLAGS}"
+  )
+
+  if [[ -n "${CMAKE_GENERATOR}" ]]; then
+    cmake_args=(-G "${CMAKE_GENERATOR}" "${cmake_args[@]}")
+  fi
+
+  cmake "${cmake_args[@]}"
+
+  local -a benchmark_targets=(
+    switch
+    simple_sml
+    header_sml
+  )
+  cmake --build "${build_dir}" --target "${benchmark_targets[@]}" -j "${JOBS}"
+
   JOBS="${original_jobs}"
   echo "Benchmark smoke build passed."
 }
