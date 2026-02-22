@@ -25,6 +25,7 @@ jobs:
             clang-tidy \
             cmake \
             gcovr \
+            lcov \
             ninja-build \
             python3
 
