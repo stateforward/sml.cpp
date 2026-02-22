@@ -55,7 +55,7 @@ resolve_tool() {
   return 1
 }
 
-resolve_gcov_command() {
+resolve_coverage_gcov_tool() {
   local family="$1"
   if [[ "${family}" != "clang" ]]; then
     echo "gcov"
@@ -70,12 +70,17 @@ resolve_gcov_command() {
     llvm_cov="$(command -v llvm-cov 2>/dev/null || true)"
   fi
 
-  if [[ -n "${llvm_cov}" ]]; then
-    echo "${llvm_cov} gcov"
+  if [[ -z "${llvm_cov}" ]]; then
+    echo "gcov"
     return 0
   fi
 
-  echo "gcov"
+  local wrapper_path="${BUILD_ROOT}/coverage/.llvm-gcov-wrapper.sh"
+  mkdir -p "${BUILD_ROOT}/coverage"
+  printf '#!/usr/bin/env sh\n%s gcov "$@"\n' "${llvm_cov}" > "${wrapper_path}"
+  chmod +x "${wrapper_path}"
+
+  echo "${wrapper_path}"
 }
 
 cpu_count() {
@@ -331,8 +336,11 @@ run_coverage_gate() {
 
   start_section "coverage"
 
-  local gcov_cmd
-  gcov_cmd="$(resolve_gcov_command "${COMPILER_FAMILY}")"
+  local gcov_tool
+  gcov_tool="$(resolve_coverage_gcov_tool "${COMPILER_FAMILY}")"
+  if [[ "${COMPILER_FAMILY}" == "clang" && "${gcov_tool}" == "gcov" ]]; then
+    echo "Using default gcov for coverage; this may fail on mixed compiler profiles."
+  fi
 
   local coverage_flags="${BASE_CXX_FLAGS} --coverage"
   local coverage_dir="${BUILD_ROOT}/coverage"
@@ -357,11 +365,12 @@ run_coverage_gate() {
     local coverage_info="${coverage_dir}/coverage.info"
     local coverage_extract="${coverage_dir}/coverage-filtered.info"
     local lcov_report="${coverage_dir}/coverage-lcov-summary.txt"
-    local lcov_capture_errors="inconsistent,source,format,unsupported,empty,gcov"
+    local lcov_capture_errors="inconsistent,source,format,unsupported,empty,gcov,version"
     local lcov_extract_errors="inconsistent,format,count,source,unsupported"
     local lcov_summary_errors="inconsistent,corrupt,unsupported,count"
     if LC_ALL=C lcov --capture --base-directory "${REPO_ROOT}" --directory "${coverage_dir}" \
       --output-file "${coverage_info}" \
+      --gcov-tool "${gcov_tool}" \
       --ignore-errors "${lcov_capture_errors}" \
       >"${coverage_report_file}" 2>&1 && \
       LC_ALL=C lcov --extract "${coverage_info}" "${REPO_ROOT}/*" --output-file "${coverage_extract}" \
@@ -384,7 +393,7 @@ run_coverage_gate() {
 
   if [[ -z "${coverage_percent}" ]] && command -v gcovr >/dev/null 2>&1; then
     if gcovr --root "${REPO_ROOT}" "${coverage_dir}" --txt -j 1 \
-      --gcov-executable "${gcov_cmd}" --gcov-ignore-errors all \
+      --gcov-executable "${gcov_tool}" --gcov-ignore-errors all \
       >"${coverage_report_file}" 2>&1; then
       used_tool="gcovr"
       coverage_report="$(cat "${coverage_report_file}")"

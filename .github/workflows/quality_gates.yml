@@ -23,6 +23,7 @@ jobs:
             clang \
             clang-format \
             clang-tidy \
+            llvm \
             cmake \
             gcovr \
             lcov \
