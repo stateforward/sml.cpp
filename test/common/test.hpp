@@ -13,14 +13,14 @@
 #define expect(...) (void)((__VA_ARGS__) || (expect_fail__(#__VA_ARGS__, __FILE__, __LINE__), 0))
 #define static_expect(...) static_assert((__VA_ARGS__), "fail")
 
-inline void expect_fail__(const char *msg, const char *file, int line) {
+inline void expect_fail__(const char* msg, const char* file, int line) {
   std::printf("%s:%d:%s\n", file, line, msg);
   std::exit(-1);
 }
 
 struct test {
   template <class Test>
-  test(const Test &test) {
+  test(const Test& test) {
     test();
   }
 };

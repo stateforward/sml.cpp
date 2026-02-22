@@ -180,7 +180,7 @@ test unexpected_any_event = [] {
 
 test unexpected_any_unknown_event = [] {
   struct e_unknown {
-    int *out = nullptr;
+    int* out = nullptr;
   };
   struct c {
     auto operator()() const {

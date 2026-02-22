@@ -119,6 +119,19 @@ int main() {
   cl /std:c++14 /Ox /W3 tcp_release.cpp
   ```
 
+#### Quality gates
+Use the new quality gate script for end-to-end checks:
+
+```sh
+./scripts/quality_gates.sh
+```
+
+Optional example:
+
+```sh
+./scripts/quality_gates.sh --skip-benchmarks --skip-sanitizers
+```
+
 <p align="center">
 <table>
   <tr>

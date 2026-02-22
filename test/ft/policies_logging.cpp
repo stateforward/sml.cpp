@@ -38,8 +38,7 @@ struct my_logger {
   template <class SM, class TAction, class TEvent>
   void log_action(const TAction&, const TEvent&) {
     std::stringstream sstr;
-    sstr << "[" << sml::aux::get_type_name<SM>() << "] "
-         << "/ " << sml::aux::get_type_name<TAction>();
+    sstr << "[" << sml::aux::get_type_name<SM>() << "] " << "/ " << sml::aux::get_type_name<TAction>();
     const auto str = sstr.str();
     messages_out.push_back(str);
   }

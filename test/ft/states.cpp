@@ -220,10 +220,10 @@ test any_state = [] {
   struct c {
     auto operator()() {
       using namespace sml;
-      auto action1 = [this]{ calls += "a1|"; };
-      auto action2 = [this]{ calls += "a2|"; };
-      auto action3 = [this]{ calls += "a3|"; };
-      
+      auto action1 = [this] { calls += "a1|"; };
+      auto action2 = [this] { calls += "a2|"; };
+      auto action3 = [this] { calls += "a3|"; };
+
       // clang-format off
       return make_transition_table(
         any + event<e1> / action1,
@@ -265,7 +265,7 @@ test any_state_nested = [] {
   struct s {
     auto operator()() noexcept {
       using namespace sml;
-      auto action1 = [this]{ calls += "a1|"; };
+      auto action1 = [this] { calls += "a1|"; };
       // clang-format off
       return make_transition_table(
          *idle + event<e1> / action1 = s1
@@ -278,8 +278,8 @@ test any_state_nested = [] {
   struct c {
     auto operator()() noexcept {
       using namespace sml;
-      auto action2 = [this]{ calls += "a2|"; };
-      auto action3 = [this]{ calls += "a3|"; };
+      auto action2 = [this] { calls += "a2|"; };
+      auto action3 = [this] { calls += "a3|"; };
       // clang-format off
       return make_transition_table(
          any + event<e2> / action2,
@@ -321,12 +321,10 @@ test any_state_fallback_when_guard_fails = [] {
   struct c {
     auto operator()() {
       using namespace sml;
-      auto action1 = [this]{ calls += "a1|"; };
-      auto action2 = [this]{ calls += "a2|"; };
-      
-      auto true_guard = []{ return true; };
-      auto false_guard = []{ return false; };
-      
+      auto action1 = [this] { calls += "a1|"; };
+      auto action2 = [this] { calls += "a2|"; };
+      auto false_guard = [] { return false; };
+
       // clang-format off
       return make_transition_table(
         *idle + event<e1> = s1,
