@@ -62,7 +62,7 @@ resolve_gcov_command() {
     return 0
   fi
 
-  local llvm_cov
+  local llvm_cov=""
   if command -v xcrun >/dev/null 2>&1; then
     llvm_cov="$(xcrun -f llvm-cov 2>/dev/null || true)"
   fi
