@@ -1,0 +1,28 @@
+name: quality_gates
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality_gates:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            clang-format \
+            clang-tidy \
+            cmake \
+            gcovr \
+            ninja-build \
+            python3
+
+      - name: Run quality gates
+        run: |
+          ./scripts/quality_gates.sh
