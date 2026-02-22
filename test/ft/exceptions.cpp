@@ -67,7 +67,7 @@ test exception_data_minimal = [] {
   struct c {
     auto operator()() const {
       using namespace sml;
-      auto guard = [](const auto& ex) { return ex.value == 42; };
+      auto guard = [](const exception_data& ex) { return ex.value == 42; };
 
       // clang-format off
       return make_transition_table(
