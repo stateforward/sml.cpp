@@ -210,7 +210,7 @@ run_format_gate() {
   fi
 
   while IFS= read -r -d '' file; do
-    ((format_count++))
+    format_count=$((format_count + 1))
     if [[ "${supports_werror}" -eq 1 ]]; then
       "${CLANG_FORMAT_CMD}" --style=file --dry-run --Werror "${file}"
     else
