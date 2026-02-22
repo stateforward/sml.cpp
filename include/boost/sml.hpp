@@ -23,6 +23,9 @@
   }                             \
   }                             \
   }
+#if !defined(__has_feature)
+#define __has_feature(x) 0
+#endif
 #if defined(__clang__)
 #define __BOOST_SML_UNUSED __attribute__((unused))
 #define __BOOST_SML_VT_INIT \
