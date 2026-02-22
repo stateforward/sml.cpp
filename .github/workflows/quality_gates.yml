@@ -25,6 +25,7 @@ jobs:
             clang-tidy \
             llvm \
             cmake \
+            libboost-dev \
             gcovr \
             lcov \
             ninja-build \
