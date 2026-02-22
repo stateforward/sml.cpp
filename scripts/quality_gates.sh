@@ -438,7 +438,10 @@ run_coverage_gate() {
 
 run_benchmarks_gate() {
   start_section "benchmarks"
+  local original_jobs="${JOBS}"
+  JOBS=1
   run_build "benchmarks" 17 ON OFF OFF "${BASE_CXX_FLAGS}" -DSML_BUILD_BENCHMARKS=ON -DSML_BUILD_TESTS=OFF -DSML_BUILD_EXAMPLES=OFF
+  JOBS="${original_jobs}"
   echo "Benchmark smoke build passed."
 }
 
