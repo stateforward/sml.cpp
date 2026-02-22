@@ -23,8 +23,14 @@
   }                             \
   }                             \
   }
+#if defined(__clang__)
+#define __BOOST_SML_HAS_FEATURE(_Feature) __has_feature(_Feature)
+#else
+#define __BOOST_SML_HAS_FEATURE(_Feature) 0
+#endif
+
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)))
+    __BOOST_SML_HAS_FEATURE(address_sanitizer) || __BOOST_SML_HAS_FEATURE(undefined_behavior_sanitizer)
 #define __BOOST_SML_SANITIZER_BUILD 1
 #else
 #define __BOOST_SML_SANITIZER_BUILD 0
