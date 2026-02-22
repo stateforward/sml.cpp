@@ -8,11 +8,11 @@
 // clang-format off
 #if __has_include(<boost/di.hpp>)
 // clang-format on
-#include <boost/sml.hpp>
 #include <boost/di.hpp>
+#include <boost/sml.hpp>
 #include <cassert>
-#include <typeinfo>
 #include <iostream>
+#include <typeinfo>
 
 namespace sml = boost::sml;
 namespace di = boost::di;

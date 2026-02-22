@@ -29,7 +29,7 @@ test constexpr_sm = [] {
   constexpr sml::sm<c, sml::dispatch<sml::back::policies::branch_stm>> sm{};
   (void)sm;
 
-  constexpr auto test =  []{
+  constexpr auto test = [] {
     sml::sm<c, sml::dispatch<sml::back::policies::branch_stm>> sm{};
     sm.process_event(e1{});
     return sm.is(X);

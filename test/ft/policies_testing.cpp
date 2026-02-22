@@ -33,11 +33,11 @@ test sm_testing = [] {
     auto operator()() noexcept {
       using namespace sml;
 
-      auto guard = [](const data &d) { return d.value == 42; };
-      auto action = [](data &d) { d.value = 123; };
+      auto guard = [](const data& d) { return d.value == 42; };
+      auto action = [](data& d) { d.value = 123; };
 
       struct Action {
-        void operator()(data &d) noexcept { d.value = 12; }
+        void operator()(data& d) noexcept { d.value = 12; }
       };
 
       // clang-format off

@@ -163,8 +163,7 @@ test subsequent_anonymous_transitions_composite = [] {
   expect(calls == expected);
 };
 
-
-test subsequent_anonymous_transitions_composite_with_action = []{
+test subsequent_anonymous_transitions_composite_with_action = [] {
   using namespace sml;
 
   using V = std::string;
@@ -210,11 +209,9 @@ test subsequent_anonymous_transitions_composite_with_action = []{
   expect(sm.is(state<sub_sm>));
   expect(sm.is<decltype(state<sub_sm>)>(s2));
   expect(!sm.is<decltype(state<sub_sm>)>(s1));
-
 };
 
-
-test subsequent_anonymous_transitions_composite_without_action = []{
+test subsequent_anonymous_transitions_composite_without_action = [] {
   using namespace sml;
 
   //
@@ -260,7 +257,7 @@ test subsequent_anonymous_transitions_composite_without_action = []{
   expect(sm.is<decltype(state<sub_sm>)>(X));
 };
 
-test subsequent_anonymous_transitions_composite_with_non_sub_sm_as_init = []{
+test subsequent_anonymous_transitions_composite_with_non_sub_sm_as_init = [] {
   using namespace sml;
 
   //
@@ -306,7 +303,6 @@ test subsequent_anonymous_transitions_composite_with_non_sub_sm_as_init = []{
   std::string expected = "s1-sub_sm|ss1-ss2|ss2-x|sub_sm-X|";
   expect(calls == expected);
 };
-
 
 test self_transition = [] {
   enum class calls { s1_entry, s1_exit, s1_action };

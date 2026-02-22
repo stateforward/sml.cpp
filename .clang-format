@@ -1,6 +1,8 @@
 ---
 Language:               Cpp
 Standard:               Cpp11
+PointerAlignment:       Left
+ReferenceAlignment:     Left
 BasedOnStyle:           Google
 ColumnLimit:            128
 ---

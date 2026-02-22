@@ -4,7 +4,7 @@
 # Distributed under the Boost Software License, Version 1.0.
 # (See accompanying file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-.PHONY: all doc clean test example
+.PHONY: all doc clean test example quality
 CXX?=clang++
 CXXSTD?=c++14
 
@@ -33,6 +33,9 @@ MKDOCS_SITE?=site
 PLANTCXX:=$(subst -std=c++14,-std=c++17,$(CXXFLAGS))
 
 all: test example
+
+quality:
+	./scripts/quality_gates.sh
 
 check: style
 

@@ -61,14 +61,14 @@ test sm_ctor = [] {
 test sm_noncopyable_deps = [] {
   struct dependency {
     dependency() = default;
-    dependency(dependency const &) = delete;
+    dependency(dependency const&) = delete;
     int i = 0;
   };
 
   struct c {
     auto operator()() const {
       using namespace sml;
-      return make_transition_table(*idle + event<e1> / [](dependency &) {});
+      return make_transition_table(*idle + event<e1> / [](dependency&) {});
     }
   };
 

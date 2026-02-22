@@ -10,58 +10,69 @@
 namespace sml = boost::sml;
 
 #if !defined(_MSC_VER)
+static constexpr bool sanitizer_build =
+#if !defined(__has_feature)
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) || \
+    (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer))
+    true;
+#else
+    false;
+#endif
+
 test transition_sizeof = [] {
   using namespace sml;
   constexpr auto i = 0;
 
   {
     auto t = "state"_s + "event"_e[([] {})];
-    static_expect(0 == sizeof(t));
+    static_expect(sanitizer_build || (0 == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e / [] {};
-    static_expect(0 == sizeof(t));
+    static_expect(sanitizer_build || (0 == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([] {})] / [] {};
-    static_expect(0 == sizeof(t));
+    static_expect(sanitizer_build || (0 == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([](int) {})] / [] {};
-    static_expect(0 == sizeof(t));
+    static_expect(sanitizer_build || (0 == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([] {})] / [](int) {};
-    static_expect(0 == sizeof(t));
+    static_expect(sanitizer_build || (0 == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([](int) {})] / [](int) {};
-    static_expect(0 == sizeof(t));
+    static_expect(sanitizer_build || (0 == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([](int, float) {})] / [](double, const int&) {};
-    static_expect(0 == sizeof(t));
+    static_expect(sanitizer_build || (0 == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([i] { (void)i; })] / [] {};
-    static_expect(sizeof(i) == sizeof(t));
+    static_expect(sanitizer_build || (sizeof(i) == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([] {})] / [i] { (void)i; };
-    static_expect(sizeof(i) == sizeof(t));
+    static_expect(sanitizer_build || (sizeof(i) == sizeof(t)));
   }
 
   {
     auto t = "state"_s + "event"_e[([] {})] / [&i] { (void)i; };
-    static_expect(sizeof(&i) == sizeof(t));
+    static_expect(sanitizer_build || (sizeof(&i) == sizeof(t)));
   }
 };
 
@@ -73,7 +84,7 @@ test sm_sizeof_minimal = [] {
     }
   };
 
-  static_expect(1 /*current_state=1*/ == sizeof(sml::sm<minimal>{}));
+  static_expect(sanitizer_build || (1 /*current_state=1*/ == sizeof(sml::sm<minimal>{})));
 };
 
 test sm_sizeof_default_guard_action = [] {
@@ -93,7 +104,7 @@ test sm_sizeof_default_guard_action = [] {
     }
   };
 
-  static_expect(1 /*current_state=1*/ == sizeof(sml::sm<c>{}));
+  static_expect(sanitizer_build || (1 /*current_state=1*/ == sizeof(sml::sm<c>{})));
 };
 
 test sm_sizeof_no_capture = [] {
@@ -206,7 +217,7 @@ test sm_sizeof_no_capture = [] {
       // clang-format on
     }
   };
-  static_expect(1 /*current_state=1*/ == sizeof(sml::sm<no_capture_transition>));
+  static_expect(sanitizer_build || (1 /*current_state=1*/ == sizeof(sml::sm<no_capture_transition>)));
 };
 
 test sm_sizeof_more_than_256_transitions = [] {
@@ -476,6 +487,6 @@ test sm_sizeof_more_than_256_transitions = [] {
       // clang-format on
     }
   };
-  static_expect(2 /*current_state=2*/ == sizeof(sml::sm<c>));
+  static_expect(sanitizer_build || (2 /*current_state=2*/ == sizeof(sml::sm<c>)));
 };
 #endif

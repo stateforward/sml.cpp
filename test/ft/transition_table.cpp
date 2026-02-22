@@ -9,9 +9,8 @@
 #include <string>
 #include <utility>
 
-
 #if defined(_MSC_VER) && _MSC_VER == 1933 && _MSVC_LANG == 202002L
-// workaround: operator deduction failed (MSVC 19.33 /std:c++20) 
+// workaround: operator deduction failed (MSVC 19.33 /std:c++20)
 #define OP_NEG(expr) operator!(expr)
 #else
 #define OP_NEG(expr) !expr
@@ -39,7 +38,7 @@ test operators = [] {
       using namespace sml;
       auto yes = [] { return true; };
       auto no = [] { return false; };
-      auto action = [](int &i) { i++; };
+      auto action = [](int& i) { i++; };
 
       // clang-format off
       return make_transition_table(
@@ -130,7 +129,7 @@ test member_functions = [] {
 
 struct c_guard {
   template <class T>
-  bool operator()(const T &) const noexcept {
+  bool operator()(const T&) const noexcept {
     return true;
   }
 };
@@ -138,7 +137,7 @@ struct c_guard {
 struct c_action {
   explicit c_action(int) {}
   template <class T>
-  void operator()(const T &) noexcept {}
+  void operator()(const T&) noexcept {}
 };
 
 test transition_table_types = [] {
@@ -149,7 +148,7 @@ test transition_table_types = [] {
       auto guard2 = [](auto) -> bool { return false; };
       auto guard3 = [=](int v) { return [=] { return guard2(v); }; };
       auto action1 = [] {};
-      auto action2 = [](int, auto, float &) -> void {};
+      auto action2 = [](int, auto, float&) -> void {};
 
       struct sub {
         auto operator()() noexcept {

@@ -67,7 +67,9 @@ test exception_data_minimal = [] {
   struct c {
     auto operator()() const {
       using namespace sml;
-      auto guard = [](const auto &ex) { return ex.value == 42; };
+      // clang-format off
+      auto guard = [](const exception_data& ex) { return ex.value == 42; };
+      // clang-format on
 
       // clang-format off
       return make_transition_table(
@@ -267,7 +269,9 @@ test propage_exception_if_no_handled = [] {
   auto exception = false;
   try {
     sm.process_event(e1{});  // throws exception1
-  } catch (const exception1 &) {
+    // clang-format off
+  } catch (const exception1&) {
+    // clang-format on
     expect(sm.is(sml::X));
     exception = true;
   }

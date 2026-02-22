@@ -42,7 +42,7 @@ test di_minimal = [] {
 
 test di_ctor = [] {
   struct c {
-    int &i_;
+    int& i_;
 
     auto operator()() const {
       using namespace sml;
@@ -68,7 +68,7 @@ test di_complex = [] {
     virtual void dummy() = 0;
   };
   struct impl1 : i1 {
-    void dummy() override{};
+    void dummy() override {};
   };
 
   struct i2 {
@@ -76,7 +76,7 @@ test di_complex = [] {
     virtual void dummy() = 0;
   };
   struct impl2 : i2 {
-    void dummy() override{};
+    void dummy() override {};
   };
 
   struct i3 {
@@ -84,7 +84,7 @@ test di_complex = [] {
     virtual void dummy() = 0;
   };
   struct impl3 : i3 {
-    void dummy() override{};
+    void dummy() override {};
   };
 
   struct i4 {
@@ -92,7 +92,7 @@ test di_complex = [] {
     virtual void dummy() = 0;
   };
   struct impl4 : i4 {
-    void dummy() override{};
+    void dummy() override {};
   };
 
   struct i5 {
@@ -100,38 +100,38 @@ test di_complex = [] {
     virtual void dummy() = 0;
   };
   struct impl5 : i5 {
-    void dummy() override{};
+    void dummy() override {};
   };
 
   struct c {
     auto operator()() const {
       using namespace sml;
 
-      auto guard1 = [](int i, const auto &, double d) {
+      auto guard1 = [](int i, const auto&, double d) {
         expect(42 == i);
         expect(87.0 == d);
         return true;
       };
 
-      auto guard2 = [](int i, i1 &p1, i2 &p2, i3 &p3) {
+      auto guard2 = [](int i, i1& p1, i2& p2, i3& p3) {
         expect(42 == i);
-        expect(dynamic_cast<const impl1 *>(&p1));
-        expect(dynamic_cast<const impl2 *>(&p2));
-        expect(dynamic_cast<const impl3 *>(&p3));
+        expect(dynamic_cast<const impl1*>(&p1));
+        expect(dynamic_cast<const impl2*>(&p2));
+        expect(dynamic_cast<const impl3*>(&p3));
         return true;
       };
 
-      auto action1 = [](const auto &, double d, int i) {
+      auto action1 = [](const auto&, double d, int i) {
         expect(42 == i);
         expect(87.0 == d);
       };
 
-      auto action2 = [](const i1 &p1, const i2 &p2, const i3 &p3, const i4 &p4, const i5 &p5) {
-        expect(dynamic_cast<const impl1 *>(&p1));
-        expect(dynamic_cast<const impl2 *>(&p2));
-        expect(dynamic_cast<const impl3 *>(&p3));
-        expect(dynamic_cast<const impl4 *>(&p4));
-        expect(dynamic_cast<const impl5 *>(&p5));
+      auto action2 = [](const i1& p1, const i2& p2, const i3& p3, const i4& p4, const i5& p5) {
+        expect(dynamic_cast<const impl1*>(&p1));
+        expect(dynamic_cast<const impl2*>(&p2));
+        expect(dynamic_cast<const impl3*>(&p3));
+        expect(dynamic_cast<const impl4*>(&p4));
+        expect(dynamic_cast<const impl5*>(&p5));
       };
 
       // clang-format off

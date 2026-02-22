@@ -132,7 +132,7 @@ elseif (IS_COMPILER_OPTION_GCC_LIKE)
 
     if (NOT ${SML_USE_EXCEPTIONS})
       target_compile_options(sml INTERFACE
-        $<BUILD_INTERFACE:"-fno-exceptions"> # compiles without exception support
+        $<BUILD_INTERFACE:-fno-exceptions> # compiles without exception support
       )
     endif()
   endif()

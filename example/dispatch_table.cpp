@@ -18,7 +18,7 @@ struct runtime_event {
 };
 struct event1 {
   static constexpr auto id = 1;
-  event1(const runtime_event &) {}
+  event1(const runtime_event&) {}
 };
 struct event2 {
   static constexpr auto id = 2;

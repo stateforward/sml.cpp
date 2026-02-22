@@ -16,7 +16,7 @@ struct e1 {};
 struct eval {
   auto operator()() const {
     const auto guard = [] { return true; };
-    const auto action = [](int &a) { ++a; };
+    const auto action = [](int& a) { ++a; };
 
     // clang-format off
     using namespace sml;
@@ -36,4 +36,3 @@ int main() {
   assert(3 == a);
   assert(sm.is(sml::X));
 }
-

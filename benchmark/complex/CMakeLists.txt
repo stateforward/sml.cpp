@@ -11,7 +11,12 @@ if (IS_COMPILER_GCC_LIKE)
   set(CMAKE_CXX_STANDARD ${CURRENT_CXX_STANDARD})
 endif()
 
-add_executable(complex_euml2 euml2.cpp)
+if (EXISTS "${Boost_INCLUDE_DIRS}/boost/msm/front/euml2/euml2.hpp")
+  add_executable(complex_euml2 euml2.cpp)
+  target_link_libraries(complex_euml2 PRIVATE sml Boost::boost)
+else()
+  message(STATUS "Skipping complex_euml2 benchmark: boost/msm/front/euml2/euml2.hpp not found")
+endif()
 add_example(complex_sc benchmark_complex_sc sc.cpp)
 
 if (NOT IS_MSVC_2015)
