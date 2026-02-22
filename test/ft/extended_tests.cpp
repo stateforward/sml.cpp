@@ -6,20 +6,17 @@
 namespace sml = boost::sml;
 
 template <class TSM>
-std::vector<std::string> sorted_current_states(const TSM &sm) {
+std::vector<std::string> sorted_current_states(const TSM& sm) {
   std::vector<std::string> states;
-  sm.visit_current_states([&](auto state) {
-    states.push_back(state.c_str());
-  });
+  sm.visit_current_states([&](auto state) { states.push_back(state.c_str()); });
   std::sort(states.begin(), states.end());
   return states;
 }
 
 template <class TSM>
-bool all_regions_terminated(const TSM &sm) {
+bool all_regions_terminated(const TSM& sm) {
   const auto states = sorted_current_states(sm);
-  return std::all_of(states.cbegin(), states.cend(),
-                     [](const auto &state) { return state == "terminate"; });
+  return std::all_of(states.cbegin(), states.cend(), [](const auto& state) { return state == "terminate"; });
 }
 
 struct e_single_start {};
@@ -47,7 +44,6 @@ const auto qb_region_right_done = sml::state<class qb_region_right_done>;
 struct e_return_left {};
 struct e_return_right {};
 struct e_return_unused {};
-
 
 test is_single_region_termination_and_event_visibility = [] {
   struct machine {

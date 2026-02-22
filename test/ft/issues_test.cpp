@@ -1,15 +1,15 @@
-#include <boost/sml.hpp>
-#include <cstdio>
-#include <fstream>
 #include <atomic>
-#include <functional>
+#include <boost/sml.hpp>
 #include <chrono>
+#include <cstdio>
 #include <deque>
+#include <fstream>
+#include <functional>
 #include <queue>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <type_traits>
-#include <string>
 #if !defined(_MSC_VER)
 #include <boost/sml/utility/dispatch_table.hpp>
 #endif
@@ -58,7 +58,7 @@ struct issue_93_property {
 struct issue_93_with_prop;
 
 struct issue_93_entry_action {
-  void operator()(issue_93_with_prop &owner) const;
+  void operator()(issue_93_with_prop& owner) const;
 };
 
 struct issue_313_payload {
@@ -102,7 +102,7 @@ struct issue_93_with_prop {
   sml::sm<issue_93_transitions> sm;
 };
 
-inline void issue_93_entry_action::operator()(issue_93_with_prop &owner) const {
+inline void issue_93_entry_action::operator()(issue_93_with_prop& owner) const {
   owner.mark_enter();
   owner.method();
   owner.property.on_entry();
@@ -119,7 +119,7 @@ const std::function<bool(const issue_313_payload&)> issue_313_traits::is_above_f
 const std::function<void()> issue_313_traits::on_below_five = [] { ++issue_313_below_count; };
 const std::function<void()> issue_313_traits::on_above_five = [] { ++issue_313_above_count; };
 const std::function<void()> issue_313_traits::on_exactly_five = [] { ++issue_313_exact_count; };
-}
+}  // namespace
 
 test issue_88 = [] {
   struct e1 {};
@@ -148,9 +148,7 @@ test issue_88 = [] {
 test issue_86 = [] {
   struct e1 {};
   struct false_guard {
-    bool operator()(const e1&) const {
-      return false;
-    }
+    bool operator()(const e1&) const { return false; }
   };
 
   struct transitions {
@@ -178,9 +176,7 @@ test issue_86 = [] {
 test issue_85 = [] {
   struct e1 {};
   struct false_guard {
-    bool operator()(const e1&) const {
-      return false;
-    }
+    bool operator()(const e1&) const { return false; }
   };
 
   struct transitions {
@@ -467,7 +463,7 @@ test issue_125 = [] {
 
   struct issue_125_sub_state_machine {
     issue_125_sub_state_machine(int& entered_with_event, int& entered_with_wildcard)
-      : entered_with_event{entered_with_event}, entered_with_wildcard{entered_with_wildcard} {}
+        : entered_with_event{entered_with_event}, entered_with_wildcard{entered_with_wildcard} {}
 
     auto operator()() {
       using namespace sml;
@@ -526,9 +522,7 @@ test issue_166 = [] {
   };
 
   issue_166_statemachine_class state_machine_instance{};
-  sml::sm<issue_166_statemachine_class, sml::dont_instantiate_statemachine_class> sm{
-    state_machine_instance
-  };
+  sml::sm<issue_166_statemachine_class, sml::dont_instantiate_statemachine_class> sm{state_machine_instance};
   expect(sm.process_event(issue_166_event{}));
 };
 
@@ -613,10 +607,10 @@ test issue_174 = [] {
   };
 
   struct issue_174_sdl_key_event_impl : issue_174_event, sml::utility::id<1> {
-    explicit issue_174_sdl_key_event_impl(const issue_174_event &evt) : issue_174_event{evt} {}
+    explicit issue_174_sdl_key_event_impl(const issue_174_event& evt) : issue_174_event{evt} {}
   };
   struct issue_174_sdl_mouse_event_impl : issue_174_event, sml::utility::id<2> {
-    explicit issue_174_sdl_mouse_event_impl(const issue_174_event &evt) : issue_174_event{evt} {}
+    explicit issue_174_sdl_mouse_event_impl(const issue_174_event& evt) : issue_174_event{evt} {}
   };
 
   struct transitions {
@@ -769,7 +763,7 @@ test issue_182 = [] {
   bool caught = false;
   try {
     unhandled.process_event(issue_182_request{false});
-  } catch (const issue_182_unhandled_error &) {
+  } catch (const issue_182_unhandled_error&) {
     caught = true;
   }
 
@@ -946,8 +940,8 @@ test issue_194 = [] {
 };
 
 test issue_198 = [] {
-  // This is a CMake configuration issue about versioned feature checks, not a runtime behavior regression.
-  // Keep this test as an executable marker so the issue path is represented in the test list.
+// This is a CMake configuration issue about versioned feature checks, not a runtime behavior regression.
+// Keep this test as an executable marker so the issue path is represented in the test list.
 #if defined(_MSVC_LANG)
   expect(__cplusplus >= 201103L || _MSVC_LANG >= 201103L);
 #else
@@ -1017,7 +1011,7 @@ test issue_221 = [] {
   expect(1 == static_cast<const issue_221_unexpected&>(fallback).unexpected_calls);
 };
 
-#if 0 // Skip remaining issue_* regressions (241+) for this targeted fix.
+#if 0  // Skip remaining issue_* regressions (241+) for this targeted fix.
 test issue_241 = [] {
   struct issue_241_poll_event {};
   struct issue_241_msg_event {};
@@ -1126,10 +1120,8 @@ test issue_242 = [] {
   expect(sm.is(sml::X));
 };
 
-#define ISSUE_REPRO_TEST(ID, TITLE)                            \
-  test issue_ ## ID = [] {                                    \
-    return expect(issue_repro("tmp/issues/issue-" #ID ".md", ID, TITLE)); \
-  };
+#define ISSUE_REPRO_TEST(ID, TITLE) \
+  test issue_##ID = [] { return expect(issue_repro("tmp/issues/issue-" #ID ".md", ID, TITLE)); };
 ISSUE_REPRO_TEST(44, "Marking initial state in transition that originates from its nested state")
 ISSUE_REPRO_TEST(46, "Anonymous explicit transitions from a substate don't seem to work")
 ISSUE_REPRO_TEST(73, "[question] thread safety")
