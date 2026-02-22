@@ -23,8 +23,11 @@
   }                             \
   }                             \
   }
-#if !defined(__has_feature)
-#define __has_feature(x) 0
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) || \
+    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)))
+#define __BOOST_SML_SANITIZER_BUILD 1
+#else
+#define __BOOST_SML_SANITIZER_BUILD 0
 #endif
 #if defined(__clang__)
 #define __BOOST_SML_UNUSED __attribute__((unused))
@@ -842,16 +845,28 @@ template <class, class>
 struct zero_wrapper_impl;
 template <class TExpr, class... TArgs>
 struct zero_wrapper_impl<TExpr, type_list<TArgs...>> {
+#if __BOOST_SML_SANITIZER_BUILD
+  using wrapper_type = zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>;
+  constexpr auto operator()(TArgs... args) const { return static_cast<const wrapper_type *>(this)->get()(args...); }
+#else
   constexpr auto operator()(TArgs... args) const { return reinterpret_cast<const TExpr &>(*this)(args...); }
+#endif
   __BOOST_SML_ZERO_SIZE_ARRAY(byte);
 };
 template <class TExpr>
 struct zero_wrapper<TExpr, void_t<decltype(+declval<TExpr>())>>
-    : zero_wrapper_impl<TExpr, function_traits_t<decltype(&TExpr::operator())>> {
+    : zero_wrapper_impl<TExpr,
+                        function_traits_t<decltype(&TExpr::operator())>> {
   using type = TExpr;
+#if __BOOST_SML_SANITIZER_BUILD
+  constexpr explicit zero_wrapper(const TExpr &expr) : expr(expr) {}
+  const TExpr &get() const { return expr; }
+  TExpr expr;
+#else
   template <class... Ts>
   constexpr zero_wrapper(Ts &&...) {}
   const TExpr &get() const { return reinterpret_cast<const TExpr &>(*this); }
+#endif
 };
 namespace detail {
 template <class, int N, int... Ns>
@@ -2993,7 +3008,7 @@ struct transition<state<S1>, state<S2>, front::event<E>, always, A> {
   using guard = always;
   using action = A;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<A, E>>;
-  constexpr transition(const always &, const A &a) : a(a) {}
+  constexpr transition(always, const A &a) : a(a) {}
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state, aux::true_type) {
     sm.process_internal_event(back::on_exit<back::_, TEvent>{event}, deps, subs, current_state);
@@ -3024,7 +3039,7 @@ struct transition<state<internal>, state<S2>, front::event<E>, always, A> {
   using guard = always;
   using action = A;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<A, E>>;
-  constexpr transition(const always &, const A &a) : a(a) {}
+  constexpr transition(always, const A &a) : a(a) {}
   template <class TEvent, class SM, class TDeps, class TSubs, class... Ts>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &, Ts &&...) {
     call<TEvent, args_t<A, TEvent>, typename SM::logger_t>::execute(a, event, sm, deps, subs);
@@ -3042,7 +3057,7 @@ struct transition<state<S1>, state<S2>, front::event<E>, G, none> {
   using guard = G;
   using action = none;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<G, E>>;
-  constexpr transition(const G &g, const none &) : g(g) {}
+  constexpr transition(const G &g, none) : g(g) {}
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state, aux::true_type) {
     if (call<TEvent, args_t<G, TEvent>, typename SM::logger_t>::execute(g, event, sm, deps, subs)) {
@@ -3077,7 +3092,7 @@ struct transition<state<internal>, state<S2>, front::event<E>, G, none> {
   using guard = G;
   using action = none;
   using deps = aux::apply_t<aux::unique_t, get_deps_t<G, E>>;
-  constexpr transition(const G &g, const none &) : g(g) {}
+  constexpr transition(const G &g, none) : g(g) {}
   template <class TEvent, class SM, class TDeps, class TSubs, class... Ts>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &, Ts &&...) {
     return call<TEvent, args_t<G, TEvent>, typename SM::logger_t>::execute(g, event, sm, deps, subs);
@@ -3094,7 +3109,7 @@ struct transition<state<S1>, state<S2>, front::event<E>, always, none> {
   using guard = always;
   using action = none;
   using deps = aux::type_list<>;
-  constexpr transition(const always &, const none &) {}
+  constexpr transition(always, none) {}
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr bool execute(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state, aux::true_type) {
     sm.process_internal_event(back::on_exit<back::_, TEvent>{event}, deps, subs, current_state);
@@ -3123,7 +3138,7 @@ struct transition<state<internal>, state<S2>, front::event<E>, always, none> {
   using guard = always;
   using action = none;
   using deps = aux::type_list<>;
-  constexpr transition(const always &, const none &) {}
+  constexpr transition(always, none) {}
   template <class TEvent, class SM, class TDeps, class TSubs, class... Ts>
   constexpr bool execute(const TEvent &, SM &, TDeps &, TSubs &, typename SM::state_t &, Ts &&...) {
     return true;
@@ -3198,6 +3213,7 @@ BOOST_SML_NAMESPACE_END
 #undef __BOOST_SML_ZERO_SIZE_ARRAY
 #undef __BOOST_SML_ZERO_SIZE_ARRAY_CREATE
 #undef __BOOST_SML_TEMPLATE_KEYWORD
+#undef __BOOST_SML_SANITIZER_BUILD
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #elif defined(__GNUC__)
