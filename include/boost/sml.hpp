@@ -2930,10 +2930,16 @@ constexpr void update_composite_states(TSubs &subs, aux::false_type, Ts &&...) {
 constexpr void clear_defer_queue(back::no_policy &) {}
 template <class TQueue>
 constexpr void clear_defer_queue(TQueue &queue) {
-  auto it = queue.begin();
-  while (it != queue.end()) {
-    it = queue.erase(it);
-  }
+  queue.erase(queue.begin(), queue.end());
+}
+template <class T, class TSubs>
+constexpr void clear_sub_sm_defer_state(TSubs &subs) {
+  auto &sub_sm = back::sub_sm<back::sm_impl<T>>::get(&subs);
+  clear_defer_queue(sub_sm.defer_);
+  sub_sm.defer_processing_ = decltype(sub_sm.defer_processing_){};
+  sub_sm.defer_again_ = decltype(sub_sm.defer_again_){};
+  sub_sm.defer_it_ = {};
+  sub_sm.defer_end_ = {};
 }
 template <class SM, class TDeps, class TSubs, class TSrcState, class TDstState>
 constexpr void update_current_state(SM &, TDeps &deps, TSubs &, typename SM::state_t &current_state,
@@ -2950,12 +2956,7 @@ constexpr void update_current_state(SM &, TDeps &deps, TSubs &subs, typename SM:
   back::policies::log_state_change<typename SM::sm_t>(aux::type_wrapper<typename SM::logger_t>{}, deps, aux::string<T>{},
                                                       aux::string<typename TDstState::type>{});
   current_state = new_state;
-  auto &sub_sm = back::sub_sm<back::sm_impl<T>>::get(&subs);
-  clear_defer_queue(sub_sm.defer_);
-  sub_sm.defer_processing_ = decltype(sub_sm.defer_processing_){};
-  sub_sm.defer_again_ = decltype(sub_sm.defer_again_){};
-  sub_sm.defer_it_ = {};
-  sub_sm.defer_end_ = {};
+  clear_sub_sm_defer_state<T>(subs);
 }
 template <class SM, class TDeps, class TSubs, class TSrcState, class T>
 constexpr void update_current_state(SM &, TDeps &deps, TSubs &subs, typename SM::state_t &current_state,
@@ -2965,6 +2966,17 @@ constexpr void update_current_state(SM &, TDeps &deps, TSubs &subs, typename SM:
   current_state = new_state;
   update_composite_states<back::sm_impl<T>>(subs, typename back::sm_impl<T>::has_history_states{},
                                             typename back::sm_impl<T>::history_states_t{});
+}
+template <class SM, class TDeps, class TSubs, class TSrc, class TDst>
+constexpr void update_current_state(SM &, TDeps &deps, TSubs &subs, typename SM::state_t &current_state,
+                          const typename SM::state_t &new_state, const state<back::sm<TSrc>> &,
+                          const state<back::sm<TDst>> &) {
+  back::policies::log_state_change<typename SM::sm_t>(aux::type_wrapper<typename SM::logger_t>{}, deps, aux::string<TSrc>{},
+                                                      aux::string<TDst>{});
+  current_state = new_state;
+  clear_sub_sm_defer_state<TSrc>(subs);
+  update_composite_states<back::sm_impl<TDst>>(subs, typename back::sm_impl<TDst>::has_history_states{},
+                                               typename back::sm_impl<TDst>::history_states_t{});
 }
 template <class S1, class S2, class E, class G, class A>
 struct transition<state<S1>, state<S2>, front::event<E>, G, A> {
