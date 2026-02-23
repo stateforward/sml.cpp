@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <iterator>
 #include <type_traits>
+#include <utility>
 
 #include "boost/sml.hpp"
 
@@ -46,14 +47,16 @@ class sm_pool {
 
   template <class TEvent>
   bool process_indexed(const std::size_t id, const TEvent& event = {}) {
-    return sm_.process_event(with_id<TEvent>(id, event));
+    return sm_.process_event(indexed_event<TEvent>{id, event});
   }
 
   template <class TEvent, class TIt>
   std::size_t process_indexed_batch(TIt first, TIt last, const TEvent& event = {}) {
     std::size_t handled = 0;
+    indexed_event<TEvent> indexed{0u, event};
     for (; first != last; ++first) {
-      handled += static_cast<std::size_t>(process_indexed<TEvent>(static_cast<std::size_t>(*first), event));
+      indexed.id = static_cast<std::size_t>(*first);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
     }
     return handled;
   }
@@ -72,7 +75,7 @@ class sm_pool {
   std::size_t process_event_batch(TIt first, TIt last) {
     std::size_t handled = 0;
     for (; first != last; ++first) {
-      handled += static_cast<std::size_t>(process_event(*first));
+      handled += static_cast<std::size_t>(sm_.process_event(*first));
     }
     return handled;
   }
