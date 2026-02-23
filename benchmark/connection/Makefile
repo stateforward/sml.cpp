@@ -12,6 +12,7 @@ OBJS:=naive_if_else.cpp \
 			boost_statechart.cpp \
 			boost_msm.cpp \
 			boost_sml.cpp \
+			tensor_cache_locality.cpp \
 
 all: clean performance_release compilation_time_debug compilation_time_release executable_size_debug executable_size_release
 
