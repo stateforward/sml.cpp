@@ -1477,6 +1477,8 @@ struct get_event_mapping_impl_helper<on_entry<T1, T2>, TMappings>
 template <class T1, class T2, class TMappings>
 struct get_event_mapping_impl_helper<on_exit<T1, T2>, TMappings>
     : decltype(get_event_mapping_impl<on_exit<T1, T2>>((TMappings *)0)) {};
+template <class TMappings>
+struct get_event_mapping_impl_helper<anonymous, TMappings> : decltype(get_event_mapping_impl<anonymous>((TMappings *)0)) {};
 template <class T, class TMappings>
 using get_event_mapping_t = get_event_mapping_impl_helper<T, TMappings>;
 }  // namespace back
