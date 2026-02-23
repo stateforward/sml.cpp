@@ -2925,7 +2925,15 @@ constexpr void update_composite_states(TSubs &subs, aux::false_type, Ts &&...) {
                     using sm_impl_t = aux::apply_t<back::sm_impl, state_t>;
                     update_composite_states<sm_impl_t>(subs, aux::false_type{}, Ts{}...);
                   }
-                });
+                  });
+}
+constexpr void clear_defer_queue(back::no_policy &) {}
+template <class TQueue>
+constexpr void clear_defer_queue(TQueue &queue) {
+  auto it = queue.begin();
+  while (it != queue.end()) {
+    it = queue.erase(it);
+  }
 }
 template <class SM, class TDeps, class TSubs, class TSrcState, class TDstState>
 constexpr void update_current_state(SM &, TDeps &deps, TSubs &, typename SM::state_t &current_state,
@@ -2934,6 +2942,20 @@ constexpr void update_current_state(SM &, TDeps &deps, TSubs &, typename SM::sta
                                                       aux::string<typename TSrcState::type>{},
                                                       aux::string<typename TDstState::type>{});
   current_state = new_state;
+}
+template <class SM, class TDeps, class TSubs, class T, class TDstState,
+          __BOOST_SML_REQUIRES(!detail::is_composite_state_v<typename TDstState::type>)>
+constexpr void update_current_state(SM &, TDeps &deps, TSubs &subs, typename SM::state_t &current_state,
+                          const typename SM::state_t &new_state, const state<back::sm<T>> &, const TDstState &) {
+  back::policies::log_state_change<typename SM::sm_t>(aux::type_wrapper<typename SM::logger_t>{}, deps, aux::string<T>{},
+                                                      aux::string<typename TDstState::type>{});
+  current_state = new_state;
+  auto &sub_sm = back::sub_sm<back::sm_impl<T>>::get(&subs);
+  clear_defer_queue(sub_sm.defer_);
+  sub_sm.defer_processing_ = decltype(sub_sm.defer_processing_){};
+  sub_sm.defer_again_ = decltype(sub_sm.defer_again_){};
+  sub_sm.defer_it_ = {};
+  sub_sm.defer_end_ = {};
 }
 template <class SM, class TDeps, class TSubs, class TSrcState, class T>
 constexpr void update_current_state(SM &, TDeps &deps, TSubs &subs, typename SM::state_t &current_state,
