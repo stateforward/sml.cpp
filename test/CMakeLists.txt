@@ -18,5 +18,9 @@ elseif(IS_COMPILER_OPTION_GCC_LIKE)
   add_compile_options(-include common/test.hpp)
 endif()
 
+if(MINGW AND IS_COMPILER_OPTION_GCC_LIKE)
+  add_compile_options(-Wa,-mbig-obj)
+endif()
+
 add_subdirectory(ft)
 add_subdirectory(ut)
