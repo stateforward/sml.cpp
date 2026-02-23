@@ -48,6 +48,9 @@ add_test(test_fwd test_fwd)
 add_executable(test_history history.cpp)
 add_test(test_history test_history)
 
+add_executable(test_issue_171 issue_171.cpp)
+add_test(test_issue_171 test_issue_171)
+
 add_executable(test_issue_253 issue_253.cpp)
 add_test(test_issue_253 test_issue_253)
 
