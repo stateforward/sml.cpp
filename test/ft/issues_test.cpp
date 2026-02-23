@@ -5,6 +5,7 @@
 #include <deque>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -268,7 +269,7 @@ test issue_111 = [] {
       // clang-format off
       return make_transition_table(
         *state<parent_hsm> + on_entry<_> / [this] { ++parent_entry_calls; },
-        state<parent_hsm> + on_exit<_> / [this] { ++parent_exit_calls; },
+        state<parent_hsm> + sml::on_exit<_> / [this] { ++parent_exit_calls; },
         state<parent_hsm> + event<leave_to_forest> = state<parent_forest>,
         state<parent_forest> + event<return_to_parent> = state<parent_hsm>
       );
@@ -1524,16 +1525,16 @@ test issue_265 = [] {
       // clang-format off
       return make_transition_table(
         *menu + on_entry<_> / enter,
-        menu + on_exit<_> / exit,
+        menu + sml::on_exit<_> / exit,
         menu + event<issue_265_enter_level> = playing,
 
         playing + on_entry<_> / enter,
-        playing + on_exit<_> / exit,
+        playing + sml::on_exit<_> / exit,
         playing + event<issue_265_pause_level> = paused,
         playing + event<issue_265_exit_game> = sml::X,
 
         paused + on_entry<_> / enter,
-        paused + on_exit<_> / exit,
+        paused + sml::on_exit<_> / exit,
         paused + event<issue_265_restart_level> = playing
       );
       // clang-format on
@@ -1665,31 +1666,31 @@ test issue_276 = [] {
       // clang-format off
       return make_transition_table(
         *issue_276_state0 + on_entry<_> / enter,
-        issue_276_state0 + on_exit<_> / exit,
+        issue_276_state0 + sml::on_exit<_> / exit,
         issue_276_state0 + event<issue_276_evt0> / transition = issue_276_state1,
 
         issue_276_state1 + on_entry<_> / enter,
-        issue_276_state1 + on_exit<_> / exit,
+        issue_276_state1 + sml::on_exit<_> / exit,
         issue_276_state1 + event<issue_276_evt1> / transition = issue_276_state2,
 
         issue_276_state2 + on_entry<_> / enter,
-        issue_276_state2 + on_exit<_> / exit,
+        issue_276_state2 + sml::on_exit<_> / exit,
         issue_276_state2 + event<issue_276_evt2> / transition = issue_276_state3,
 
         issue_276_state3 + on_entry<_> / enter,
-        issue_276_state3 + on_exit<_> / exit,
+        issue_276_state3 + sml::on_exit<_> / exit,
         issue_276_state3 + event<issue_276_evt3> / transition = issue_276_state4,
 
         issue_276_state4 + on_entry<_> / enter,
-        issue_276_state4 + on_exit<_> / exit,
+        issue_276_state4 + sml::on_exit<_> / exit,
         issue_276_state4 + event<issue_276_evt4> / transition = issue_276_state5,
 
         issue_276_state5 + on_entry<_> / enter,
-        issue_276_state5 + on_exit<_> / exit,
+        issue_276_state5 + sml::on_exit<_> / exit,
         issue_276_state5 + event<issue_276_evt5> / transition = issue_276_state6,
 
         issue_276_state6 + on_entry<_> / enter,
-        issue_276_state6 + on_exit<_> / exit,
+        issue_276_state6 + sml::on_exit<_> / exit,
         issue_276_state6 + event<issue_276_evt6> / transition = sml::X
       );
       // clang-format on
@@ -1721,17 +1722,20 @@ test issue_277 = [] {
   const char* issue_277_cmake_paths[] = {
       "CMakeLists.txt", "../CMakeLists.txt", "../../CMakeLists.txt", "../../../CMakeLists.txt", "../../../../CMakeLists.txt",
   };
-  std::ifstream issue_277_cmake{};
+  const char* issue_277_expected = "sml requires GCC >= 6.0.0";
+  bool issue_277_found_expected = false;
   for (const auto* path : issue_277_cmake_paths) {
-    issue_277_cmake.clear();
-    issue_277_cmake.open(path);
-    if (issue_277_cmake.is_open()) {
+    std::ifstream issue_277_cmake{path};
+    if (!issue_277_cmake.is_open()) {
+      continue;
+    }
+    std::string issue_277_contents((std::istreambuf_iterator<char>(issue_277_cmake)), std::istreambuf_iterator<char>());
+    if (std::string::npos != issue_277_contents.find(issue_277_expected)) {
+      issue_277_found_expected = true;
       break;
     }
   }
-  expect(issue_277_cmake.is_open());
-  std::string issue_277_contents((std::istreambuf_iterator<char>(issue_277_cmake)), std::istreambuf_iterator<char>());
-  expect(std::string::npos != issue_277_contents.find("sml requires GCC >= 6.0.0"));
+  expect(issue_277_found_expected);
 };
 
 test issue_278 = [] {
@@ -2404,7 +2408,7 @@ test issue_314 = [] {
       // clang-format off
       return make_transition_table(
         *issue_314_waiting_state + event<issue_314_event> / [] { throw issue_314_runtime_error{}; } = issue_314_processing_state,
-        issue_314_waiting_state + on_exit<_> / [this] { ++waiting_exit_calls; },
+        issue_314_waiting_state + sml::on_exit<_> / [this] { ++waiting_exit_calls; },
         issue_314_processing_state + on_entry<_> / [this] { ++processing_entry_calls; },
         issue_314_processing_state + exception<issue_314_runtime_error> / [this] { ++exception_calls; } = issue_314_done_state,
         issue_314_processing_state = issue_314_done_state
@@ -2502,11 +2506,11 @@ test issue_317 = [] {
       // clang-format off
       return make_transition_table(
         *issue_317_idle_state + on_entry<_> / [this] { ++enter_calls; },
-        issue_317_idle_state + on_exit<_> / [this] { ++exit_calls; },
+        issue_317_idle_state + sml::on_exit<_> / [this] { ++exit_calls; },
         issue_317_idle_state + event<issue_317_move> = issue_317_running_state,
         issue_317_idle_state + event<issue_317_noop> / issue_317_noop_action,
         issue_317_running_state + on_entry<_> / [this] { ++enter_calls; },
-        issue_317_running_state + on_exit<_> / [this] { ++exit_calls; },
+        issue_317_running_state + sml::on_exit<_> / [this] { ++exit_calls; },
         issue_317_running_state + event<issue_317_noop> / issue_317_noop_action
       );
       // clang-format on
