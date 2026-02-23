@@ -143,7 +143,7 @@ struct pooled_dispatch {
 
 #if defined(TEST_ASM)
 int main() {
-  auto ids = random_ids();
+  const auto& ids = random_ids();
 
   direct_pool direct;
   actor_pool actor;
