@@ -51,13 +51,13 @@ class sm_pool {
 
   template <class TEvent, class TIt>
   std::size_t process_indexed_batch(TIt first, TIt last, const TEvent& event = {}) {
-    std::size_t handled = 0;
-    indexed_event<TEvent> indexed{0u, event};
-    for (; first != last; ++first) {
-      indexed.id = static_cast<std::size_t>(*first);
-      handled += static_cast<std::size_t>(sm_.process_event(indexed));
-    }
-    return handled;
+    return process_indexed_batch_impl<TEvent>(first, last, event,
+                                              typename std::iterator_traits<TIt>::iterator_category{});
+  }
+
+  template <class TEvent, class TId, class = typename std::enable_if<std::is_integral<TId>::value>::type>
+  std::size_t process_indexed_batch(const TId* ids, std::size_t count, const TEvent& event = {}) {
+    return process_indexed_batch_ptr_impl<TEvent>(ids, count, event);
   }
 
   template <class TEvent, class TRange>
@@ -72,11 +72,12 @@ class sm_pool {
 
   template <class TIt>
   std::size_t process_event_batch(TIt first, TIt last) {
-    std::size_t handled = 0;
-    for (; first != last; ++first) {
-      handled += static_cast<std::size_t>(sm_.process_event(*first));
-    }
-    return handled;
+    return process_event_batch_impl(first, last, typename std::iterator_traits<TIt>::iterator_category{});
+  }
+
+  template <class TIndexedEvent>
+  std::size_t process_event_batch(const TIndexedEvent* events, std::size_t count) {
+    return process_event_batch_ptr_impl(events, count);
   }
 
   template <class TRange>
@@ -85,6 +86,118 @@ class sm_pool {
   }
 
  private:
+  template <class TEvent, class TIt>
+  std::size_t process_indexed_batch_impl(TIt first, TIt last, const TEvent& event, std::input_iterator_tag) {
+    std::size_t handled = 0;
+    indexed_event<TEvent> indexed{0u, event};
+    for (; first != last; ++first) {
+      indexed.id = static_cast<std::size_t>(*first);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+    }
+    return handled;
+  }
+
+  template <class TEvent, class TIt>
+  std::size_t process_indexed_batch_impl(TIt first, TIt last, const TEvent& event, std::random_access_iterator_tag) {
+    std::size_t handled = 0;
+    indexed_event<TEvent> indexed{0u, event};
+    auto count = static_cast<std::size_t>(last - first);
+
+    for (; count >= 4u; count -= 4u, first += 4) {
+      indexed.id = static_cast<std::size_t>(first[0]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+
+      indexed.id = static_cast<std::size_t>(first[1]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+
+      indexed.id = static_cast<std::size_t>(first[2]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+
+      indexed.id = static_cast<std::size_t>(first[3]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+    }
+
+    for (; count != 0u; --count, ++first) {
+      indexed.id = static_cast<std::size_t>(*first);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+    }
+
+    return handled;
+  }
+
+  template <class TEvent, class TId>
+  std::size_t process_indexed_batch_ptr_impl(const TId* ids, std::size_t count, const TEvent& event) {
+    std::size_t handled = 0;
+    indexed_event<TEvent> indexed{0u, event};
+
+    for (; count >= 4u; count -= 4u, ids += 4) {
+      indexed.id = static_cast<std::size_t>(ids[0]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+
+      indexed.id = static_cast<std::size_t>(ids[1]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+
+      indexed.id = static_cast<std::size_t>(ids[2]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+
+      indexed.id = static_cast<std::size_t>(ids[3]);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+    }
+
+    for (; count != 0u; --count, ++ids) {
+      indexed.id = static_cast<std::size_t>(*ids);
+      handled += static_cast<std::size_t>(sm_.process_event(indexed));
+    }
+
+    return handled;
+  }
+
+  template <class TIt>
+  std::size_t process_event_batch_impl(TIt first, TIt last, std::input_iterator_tag) {
+    std::size_t handled = 0;
+    for (; first != last; ++first) {
+      handled += static_cast<std::size_t>(sm_.process_event(*first));
+    }
+    return handled;
+  }
+
+  template <class TIt>
+  std::size_t process_event_batch_impl(TIt first, TIt last, std::random_access_iterator_tag) {
+    std::size_t handled = 0;
+    auto count = static_cast<std::size_t>(last - first);
+
+    for (; count >= 4u; count -= 4u, first += 4) {
+      handled += static_cast<std::size_t>(sm_.process_event(first[0]));
+      handled += static_cast<std::size_t>(sm_.process_event(first[1]));
+      handled += static_cast<std::size_t>(sm_.process_event(first[2]));
+      handled += static_cast<std::size_t>(sm_.process_event(first[3]));
+    }
+
+    for (; count != 0u; --count, ++first) {
+      handled += static_cast<std::size_t>(sm_.process_event(*first));
+    }
+
+    return handled;
+  }
+
+  template <class TIndexedEvent>
+  std::size_t process_event_batch_ptr_impl(const TIndexedEvent* events, std::size_t count) {
+    std::size_t handled = 0;
+
+    for (; count >= 4u; count -= 4u, events += 4) {
+      handled += static_cast<std::size_t>(sm_.process_event(events[0]));
+      handled += static_cast<std::size_t>(sm_.process_event(events[1]));
+      handled += static_cast<std::size_t>(sm_.process_event(events[2]));
+      handled += static_cast<std::size_t>(sm_.process_event(events[3]));
+    }
+
+    for (; count != 0u; --count, ++events) {
+      handled += static_cast<std::size_t>(sm_.process_event(*events));
+    }
+
+    return handled;
+  }
+
   static storage_type make_storage(const std::size_t size, const std::true_type) { return storage_type(size); }
   static storage_type make_storage(const std::size_t, const std::false_type) { return storage_type(); }
 

@@ -134,6 +134,10 @@ struct pooled_dispatch {
     return pool.template process_indexed_batch<ev_pulse>(ids);
   }
 
+  std::size_t process_batch_ptr(const std::vector<std::uint16_t>& ids) {
+    return pool.template process_indexed_batch<ev_pulse>(ids.data(), ids.size());
+  }
+
   std::uint8_t sample(const std::uint16_t id) const { return pool.storage().flags[id]; }
 
   sml::utility::sm_pool<pool_storage, router_actor> pool;
@@ -217,6 +221,14 @@ void run_batch_bench(benchmark::State& state, const std::vector<std::uint16_t>& 
   benchmark::DoNotOptimize(pool.sample(ids.front()));
 }
 
+void run_batch_ptr_bench(benchmark::State& state, const std::vector<std::uint16_t>& ids, pooled_dispatch& pool) {
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(pool.process_batch_ptr(ids));
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(ids.size()));
+  benchmark::DoNotOptimize(pool.sample(ids.front()));
+}
+
 static void BM_direct_local(benchmark::State& state) {
   direct_pool pool;
   run_scalar_bench(state, local_ids(), pool);
@@ -257,6 +269,16 @@ static void BM_sml_pool_batch_random(benchmark::State& state) {
   run_batch_bench(state, random_ids(), pool);
 }
 
+static void BM_sml_pool_batch_ptr_local(benchmark::State& state) {
+  pooled_dispatch pool;
+  run_batch_ptr_bench(state, local_ids(), pool);
+}
+
+static void BM_sml_pool_batch_ptr_random(benchmark::State& state) {
+  pooled_dispatch pool;
+  run_batch_ptr_bench(state, random_ids(), pool);
+}
+
 BENCHMARK(BM_direct_local);
 BENCHMARK(BM_direct_random);
 BENCHMARK(BM_sml_actor_local);
@@ -265,5 +287,7 @@ BENCHMARK(BM_sml_pool_local);
 BENCHMARK(BM_sml_pool_random);
 BENCHMARK(BM_sml_pool_batch_local);
 BENCHMARK(BM_sml_pool_batch_random);
+BENCHMARK(BM_sml_pool_batch_ptr_local);
+BENCHMARK(BM_sml_pool_batch_ptr_random);
 BENCHMARK_MAIN();
 #endif
