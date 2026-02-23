@@ -5,10 +5,23 @@
 
 namespace sml = boost::sml;
 
+inline std::string canonical_state_name(std::string state) {
+  if (0 == state.find("class ")) {
+    state.erase(0, 6);
+  } else if (0 == state.find("struct ")) {
+    state.erase(0, 7);
+  }
+  const auto scope_pos = state.rfind("::");
+  if (scope_pos != std::string::npos) {
+    state.erase(0, scope_pos + 2);
+  }
+  return state;
+}
+
 template <class TSM>
 std::vector<std::string> sorted_current_states(const TSM& sm) {
   std::vector<std::string> states;
-  sm.visit_current_states([&](auto state) { states.push_back(state.c_str()); });
+  sm.visit_current_states([&](auto state) { states.push_back(canonical_state_name(state.c_str())); });
   std::sort(states.begin(), states.end());
   return states;
 }

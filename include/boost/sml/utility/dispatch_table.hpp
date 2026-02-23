@@ -101,7 +101,14 @@ auto make_dispatch_table(SM &fsm, const aux::index_sequence<Ns...> &) {
     using dispatch_table_t = bool (*)(SM &, const TEvent &);
     const static dispatch_table_t dispatch_table[sizeof...(Ns) ? sizeof...(Ns) : 1] = {
         &get_event_t<Ns + EventRangeBegin, events_ids_t>::template execute<SM, TEvent>...};
-    return dispatch_table[id - EventRangeBegin](fsm, e);
+    const auto id64 = static_cast<long long>(id);
+    const auto begin64 = static_cast<long long>(EventRangeBegin);
+    const auto count64 = static_cast<long long>(sizeof...(Ns));
+    if (id64 < begin64 || id64 >= begin64 + count64) {
+      return false;
+    }
+    const auto dispatch_id = static_cast<int>(id64 - begin64);
+    return dispatch_table[dispatch_id](fsm, e);
   };
 }
 }  // namespace detail
