@@ -101,7 +101,11 @@ auto make_dispatch_table(SM &fsm, const aux::index_sequence<Ns...> &) {
     using dispatch_table_t = bool (*)(SM &, const TEvent &);
     const static dispatch_table_t dispatch_table[sizeof...(Ns) ? sizeof...(Ns) : 1] = {
         &get_event_t<Ns + EventRangeBegin, events_ids_t>::template execute<SM, TEvent>...};
-    return dispatch_table[id - EventRangeBegin](fsm, e);
+    const auto dispatch_id = id - EventRangeBegin;
+    if (dispatch_id < 0 || dispatch_id >= static_cast<int>(sizeof...(Ns))) {
+      return false;
+    }
+    return dispatch_table[dispatch_id](fsm, e);
   };
 }
 }  // namespace detail

@@ -763,6 +763,10 @@ template <class R, class T, int N>
 constexpr R get_id(type_id_type<N, T> *) {
   return static_cast<R>(N);
 }
+template <class T, int N>
+constexpr true_type has_type_id(type_id_type<N, T> *);
+template <class T>
+constexpr false_type has_type_id(...);
 template <template <class...> class, class T>
 struct is : false_type {};
 template <template <class...> class T, class... Ts>
@@ -1299,6 +1303,15 @@ struct transitions<aux::false_type> {
     return false;
   }
 };
+template <class TEvent, class...>
+struct has_terminate_parent_transition : aux::false_type {};
+template <class TEvent, class TTransition, class... TRest>
+struct has_terminate_parent_transition<TEvent, TTransition, TRest...>
+    : aux::conditional<
+          aux::is_same<terminate_state, typename TTransition::dst_state>::value &&
+              aux::is_same<TEvent, typename TTransition::event>::value,
+          aux::true_type,
+          has_terminate_parent_transition<TEvent, TRest...>>::type {};
 template <class Tsm, class T, class... Ts>
 struct transitions_sub<sm<Tsm>, T, Ts...> {
   template <class TEvent, class SM, class TDeps, class TSubs>
@@ -1314,7 +1327,14 @@ struct transitions_sub<sm<Tsm>, T, Ts...> {
   }
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr static bool execute_impl(const TEvent &event, SM &sm, TDeps &deps, TSubs &subs, typename SM::state_t &current_state) {
-    const auto handled = sub_sm<sm_impl<Tsm>>::get(&subs).process_event(event, deps, subs);
+    auto &sub = sub_sm<sm_impl<Tsm>>::get(&subs);
+    const auto handled = sub.process_event(event, deps, subs);
+
+    if (handled && sub.is_terminated() && has_terminate_parent_transition<TEvent, T, Ts...>::value) {
+      const auto propagated = transitions<T, Ts...>::execute(event, sm, deps, subs, current_state);
+      return propagated ? propagated : handled;
+    }
+
     return handled ? handled : transitions<T, Ts...>::execute(event, sm, deps, subs, current_state);
   }
   template <class _, class TEvent, class SM, class TDeps, class TSubs>
@@ -2088,12 +2108,17 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   constexpr static void visit_state(const TVisitor &visitor) {
     visitor(aux::string<TState>{});
   }
-  constexpr bool is_terminated() const { return is_terminated_impl(aux::make_index_sequence<regions>{}); }
-  constexpr bool is_terminated_impl(aux::index_sequence<0>) const {
-    return current_state_[0] == aux::get_id<state_t, terminate_state>((states_ids_t *)0);
+  constexpr bool is_terminated() const {
+    return is_terminated_impl(aux::make_index_sequence<regions>{},
+                              decltype(aux::has_type_id<terminate_state>((states_ids_t *)0)){});
   }
   template <int... Ns>
-  constexpr bool is_terminated_impl(aux::index_sequence<Ns...>) const {
+  constexpr bool is_terminated_impl(aux::index_sequence<Ns...>, aux::false_type) const {
+    (void)sizeof...(Ns);
+    return false;
+  }
+  template <int... Ns>
+  constexpr bool is_terminated_impl(aux::index_sequence<Ns...>, aux::true_type) const {
 #if defined(__cpp_fold_expressions)
     return ((current_state_[Ns] == aux::get_id<state_t, terminate_state>((states_ids_t *)0)) && ...);
 #else

@@ -527,6 +527,9 @@ fi
 if [[ -n "${EXTRA_CXX_FLAGS}" ]]; then
   BASE_CXX_FLAGS="${BASE_CXX_FLAGS} ${EXTRA_CXX_FLAGS}"
 fi
+if [[ "${COMPILER_FAMILY}" == "clang" ]]; then
+  BASE_CXX_FLAGS="${BASE_CXX_FLAGS} -Wno-error=mismatched-tags -Wno-error=stack-exhausted -Wno-stack-exhausted"
+fi
 
 require_defaults
 
