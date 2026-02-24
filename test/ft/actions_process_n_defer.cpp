@@ -120,7 +120,9 @@ test process_n_defer_again = [] {
 
 test process_queue_runs_completion_for_popped_event_type = [] {
   struct trigger {};
-  struct queued1 {};
+  struct queued1 {
+    int value{};
+  };
   struct queued2 {};
   struct q0 {};
   struct q1 {};
@@ -140,9 +142,9 @@ test process_queue_runs_completion_for_popped_event_type = [] {
       auto wrong_state = state<wrong>;
       // clang-format off
       return make_transition_table(
-        *q0_state + event<trigger> / (process(queued1{}), process(queued2{})) = q1_state
+        *q0_state + event<trigger> / (process(queued1{42}), process(queued2{})) = q1_state
         , q1_state + event<queued1> = q2_state
-        , q2_state + completion<queued1> = q3_state
+        , q2_state + completion<queued1>[([](const queued1& event) { return event.value == 42; })] = q3_state
         , q2_state + event<queued2> = wrong_state
         , q3_state + event<queued2> = done_state
       );
@@ -157,7 +159,9 @@ test process_queue_runs_completion_for_popped_event_type = [] {
 };
 
 test defer_queue_runs_completion_for_popped_event_type = [] {
-  struct deferred {};
+  struct deferred {
+    int value{};
+  };
   struct release {};
   struct d0 {};
   struct d1 {};
@@ -178,7 +182,7 @@ test defer_queue_runs_completion_for_popped_event_type = [] {
         *d0_state + event<deferred> / defer
         , d0_state + event<release> = d1_state
         , d1_state + event<deferred> = d2_state
-        , d2_state + completion<deferred> = done_state
+        , d2_state + completion<deferred>[([](const deferred& event) { return event.value == 11; })] = done_state
         , d2_state + completion<release> = wrong_state
       );
       // clang-format on
@@ -186,7 +190,7 @@ test defer_queue_runs_completion_for_popped_event_type = [] {
   };
 
   sml::sm<c, sml::process_queue<std::queue>, sml::defer_queue<std::deque>> sm{};
-  expect(sm.process_event(deferred{}));
+  expect(sm.process_event(deferred{11}));
   expect(sm.process_event(release{}));
   expect(sm.is(sml::state<done>));
   expect(!sm.is(sml::state<wrong>));
