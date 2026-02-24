@@ -3254,7 +3254,7 @@ front::event<back::unexpected_event<TEvent>> unexpected_event __BOOST_SML_VT_INI
 template <class T>
 front::event<back::exception<T>> exception __BOOST_SML_VT_INIT;
 template <class TEvent>
-using completion = back::completion<TEvent>;
+__BOOST_SML_UNUSED front::event<back::completion<TEvent>> completion __BOOST_SML_VT_INIT;
 using anonymous = back::anonymous;
 using initial = back::initial;
 #if !(defined(_MSC_VER) && !defined(__clang__))

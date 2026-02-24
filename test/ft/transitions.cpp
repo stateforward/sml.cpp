@@ -95,7 +95,7 @@ test completion_transition_runs_before_anonymous = [] {
       // clang-format off
       return make_transition_table(
          *idle + event<e1> = s1
-        ,s1 + event<completion<e1>> / [this] { calls += "completion|"; } = s2
+        ,s1 + completion<e1> / [this] { calls += "completion|"; } = s2
         ,s1 / [this] { calls += "anonymous_s1|"; } = s3
         ,s2 / [this] { calls += "anonymous_s2|"; } = s4
       );
