@@ -142,7 +142,7 @@ test process_queue_runs_completion_for_popped_event_type = [] {
       return make_transition_table(
         *q0_state + event<trigger> / (process(queued1{}), process(queued2{})) = q1_state
         , q1_state + event<queued1> = q2_state
-        , q2_state + event<completion<queued1>> = q3_state
+        , q2_state + completion<queued1> = q3_state
         , q2_state + event<queued2> = wrong_state
         , q3_state + event<queued2> = done_state
       );
@@ -178,8 +178,8 @@ test defer_queue_runs_completion_for_popped_event_type = [] {
         *d0_state + event<deferred> / defer
         , d0_state + event<release> = d1_state
         , d1_state + event<deferred> = d2_state
-        , d2_state + event<completion<deferred>> = done_state
-        , d2_state + event<completion<release>> = wrong_state
+        , d2_state + completion<deferred> = done_state
+        , d2_state + completion<release> = wrong_state
       );
       // clang-format on
     }
