@@ -80,9 +80,13 @@ class fifo_scheduler {
     }
 
     draining_ = true;
+    struct draining_reset {
+      fifo_scheduler* self;
+      ~draining_reset() noexcept { self->draining_ = false; }
+    } reset{this};
+
     std::forward<TFn>(fn)();
     drain_pending();
-    draining_ = false;
     return true;
   }
 
@@ -194,7 +198,8 @@ struct heap_coroutine_allocator {
   }
 
   void deallocate(void* ptr, const std::size_t size, const std::size_t alignment) noexcept {
-    ::operator delete(ptr, size, std::align_val_t(alignment));
+    (void)size;
+    ::operator delete(ptr, std::align_val_t(alignment));
   }
 };
 
@@ -228,7 +233,8 @@ class pooled_coroutine_allocator {
       return;
     }
 
-    ::operator delete(ptr, size, std::align_val_t(alignment));
+    (void)size;
+    ::operator delete(ptr, std::align_val_t(alignment));
   }
 
  private:
@@ -394,7 +400,8 @@ class bool_task {
             return ::operator new(size, std::align_val_t(alignment));
           },
           [](void*, void* ptr, const std::size_t size, const std::size_t alignment) noexcept {
-            ::operator delete(ptr, size, std::align_val_t(alignment));
+            (void)size;
+            ::operator delete(ptr, std::align_val_t(alignment));
           });
     }
 
@@ -625,6 +632,7 @@ class co_sm {
     co_sm& self;
     TEvent event_value;
     bool accepted = false;
+    std::exception_ptr exception{};
 
     bool await_ready() noexcept {
       if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
@@ -636,12 +644,27 @@ class co_sm {
 
     void await_suspend(std::coroutine_handle<> handle) {
       self.scheduler_.schedule([this, handle]() mutable {
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+        try {
+          accepted = self.state_machine_.process_event(event_value);
+        } catch (...) {
+          exception = std::current_exception();
+        }
+#else
         accepted = self.state_machine_.process_event(event_value);
+#endif
         handle.resume();
       });
     }
 
-    bool await_resume() const noexcept { return accepted; }
+    bool await_resume() const {
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+      if (exception) {
+        std::rethrow_exception(exception);
+      }
+#endif
+      return accepted;
+    }
   };
 
   state_machine_type state_machine_{};

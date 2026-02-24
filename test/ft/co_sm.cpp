@@ -170,7 +170,8 @@ struct counting_allocator {
 
   void deallocate(void* ptr, const std::size_t size, const std::size_t alignment) noexcept {
     ++deallocate_calls;
-    ::operator delete(ptr, size, std::align_val_t(alignment));
+    (void)size;
+    ::operator delete(ptr, std::align_val_t(alignment));
   }
 };
 

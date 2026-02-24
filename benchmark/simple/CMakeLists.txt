@@ -13,6 +13,5 @@ add_example(simple_sc benchmark_simple_sc sc.cpp)
 
 if (NOT IS_MSVC_2015)
   add_example(simple_sml benchmark_simple_sml sml.cpp)
+  add_example(simple_co_sm benchmark_simple_co_sm co_sm.cpp)
 endif()
-
-add_example(simple_co_sm benchmark_simple_co_sm co_sm.cpp)
