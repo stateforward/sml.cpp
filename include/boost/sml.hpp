@@ -1062,33 +1062,57 @@ struct internal_event {
 struct anonymous : internal_event {
   constexpr static auto c_str() { return "anonymous"; }
 };
+template <class T, class = void>
+struct default_internal_event {
+  static const T &get() {
+    static_assert(aux::is_constructible<T>::value, "Default internal event requires a default-constructible payload type.");
+    return *static_cast<const T *>(nullptr);
+  }
+};
+template <class T>
+struct default_internal_event<T, aux::enable_if_t<aux::is_constructible<T>::value>> {
+  constexpr static const T &get() { return value; }
+  static const T value;
+};
+template <class T>
+const T default_internal_event<T, aux::enable_if_t<aux::is_constructible<T>::value>>::value{};
 template <class TEvent>
 struct completion : internal_event {
   constexpr static auto c_str() { return "completion"; }
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr completion() : event_(default_internal_event<TEvent>::get()) {}
   constexpr explicit completion(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
 template <class T, class TEvent = T>
 struct on_entry : internal_event, entry_exit {
   constexpr static auto c_str() { return "on_entry"; }
-  constexpr explicit on_entry(const TEvent &event = {}) : event_(event) {}
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr on_entry() : event_(default_internal_event<TEvent>::get()) {}
+  constexpr explicit on_entry(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
 template <class T, class TEvent = T>
 struct on_exit : internal_event, entry_exit {
   constexpr static auto c_str() { return "on_exit"; }
-  constexpr explicit on_exit(const TEvent &event = {}) : event_(event) {}
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr on_exit() : event_(default_internal_event<TEvent>::get()) {}
+  constexpr explicit on_exit(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
 template <class T, class TException = T>
 struct exception : internal_event {
   using type = TException;
-  constexpr explicit exception(const TException &exception = {}) : exception_(exception) {}
+  template <class U = TException, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr exception() : exception_(default_internal_event<TException>::get()) {}
+  constexpr explicit exception(const TException &exception) : exception_(exception) {}
   const TException &exception_;
 };
 template <class T, class TEvent = T>
 struct unexpected_event : internal_event, unexpected {
-  constexpr explicit unexpected_event(const TEvent &event = {}) : event_(event) {}
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr unexpected_event() : event_(default_internal_event<TEvent>::get()) {}
+  constexpr explicit unexpected_event(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
 template <class TEvent>
@@ -2675,7 +2699,10 @@ struct event {
   constexpr auto operator/(const T &t) const {
     return transition_ea<event, aux::zero_wrapper<T>>{*this, aux::zero_wrapper<T>{t}};
   }
-  constexpr auto operator()() const { return TEvent{}; }
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr auto operator()() const {
+    return U{};
+  }
 };
 }  // namespace front
 namespace front {
