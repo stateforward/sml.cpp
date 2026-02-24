@@ -118,6 +118,80 @@ test process_n_defer_again = [] {
   expect(calls == "|s3_entry|e1|e1|e1");
 };
 
+test process_queue_runs_completion_for_popped_event_type = [] {
+  struct trigger {};
+  struct queued1 {};
+  struct queued2 {};
+  struct q0 {};
+  struct q1 {};
+  struct q2 {};
+  struct q3 {};
+  struct done {};
+  struct wrong {};
+
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      auto q0_state = state<q0>;
+      auto q1_state = state<q1>;
+      auto q2_state = state<q2>;
+      auto q3_state = state<q3>;
+      auto done_state = state<done>;
+      auto wrong_state = state<wrong>;
+      // clang-format off
+      return make_transition_table(
+        *q0_state + event<trigger> / (process(queued1{}), process(queued2{})) = q1_state
+        , q1_state + event<queued1> = q2_state
+        , q2_state + event<completion<queued1>> = q3_state
+        , q2_state + event<queued2> = wrong_state
+        , q3_state + event<queued2> = done_state
+      );
+      // clang-format on
+    }
+  };
+
+  sml::sm<c, sml::process_queue<std::queue>> sm{};
+  expect(sm.process_event(trigger{}));
+  expect(sm.is(sml::state<done>));
+  expect(!sm.is(sml::state<wrong>));
+};
+
+test defer_queue_runs_completion_for_popped_event_type = [] {
+  struct deferred {};
+  struct release {};
+  struct d0 {};
+  struct d1 {};
+  struct d2 {};
+  struct done {};
+  struct wrong {};
+
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      auto d0_state = state<d0>;
+      auto d1_state = state<d1>;
+      auto d2_state = state<d2>;
+      auto done_state = state<done>;
+      auto wrong_state = state<wrong>;
+      // clang-format off
+      return make_transition_table(
+        *d0_state + event<deferred> / defer
+        , d0_state + event<release> = d1_state
+        , d1_state + event<deferred> = d2_state
+        , d2_state + event<completion<deferred>> = done_state
+        , d2_state + event<completion<release>> = wrong_state
+      );
+      // clang-format on
+    }
+  };
+
+  sml::sm<c, sml::process_queue<std::queue>, sml::defer_queue<std::deque>> sm{};
+  expect(sm.process_event(deferred{}));
+  expect(sm.process_event(release{}));
+  expect(sm.is(sml::state<done>));
+  expect(!sm.is(sml::state<wrong>));
+};
+
 template <typename T>
 using MinimalStaticDeque10 = MinimalStaticDeque<T, 10>;
 
