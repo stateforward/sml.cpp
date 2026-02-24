@@ -16,6 +16,9 @@ add_test(test_actions_process_n_defer test_actions_process_n_defer)
 add_executable(test_composite composite.cpp)
 add_test(test_composite test_composite)
 
+add_executable(test_co_sm co_sm.cpp)
+add_test(test_co_sm test_co_sm)
+
 add_executable(test_constexpr constexpr.cpp)
 add_test(test_constexpr test_constexpr)
 
@@ -68,6 +71,12 @@ add_test(test_policies_testing test_policies_testing)
 
 add_executable(test_policies_dispatch policies_dispatch.cpp)
 add_test(test_policies_dispatch test_policies_dispatch)
+
+add_executable(test_extended_tests extended_tests.cpp)
+add_test(test_extended_tests test_extended_tests)
+
+add_executable(test_issues_test issues_test.cpp)
+add_test(test_issues_test test_issues_test)
 
 add_executable(test_policies_thread_safe policies_thread_safe.cpp)
 add_test(test_policies_thread_safe test_policies_thread_safe)
