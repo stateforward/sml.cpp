@@ -1062,31 +1062,57 @@ struct internal_event {
 struct anonymous : internal_event {
   constexpr static auto c_str() { return "anonymous"; }
 };
+template <class T, class = void>
+struct default_internal_event {
+  static const T &get() {
+    static_assert(aux::is_constructible<T>::value, "Default internal event requires a default-constructible payload type.");
+    return *static_cast<const T *>(nullptr);
+  }
+};
+template <class T>
+struct default_internal_event<T, aux::enable_if_t<aux::is_constructible<T>::value>> {
+  constexpr static const T &get() { return value; }
+  static const T value;
+};
+template <class T>
+const T default_internal_event<T, aux::enable_if_t<aux::is_constructible<T>::value>>::value{};
 template <class TEvent>
 struct completion : internal_event {
   constexpr static auto c_str() { return "completion"; }
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr completion() : event_(default_internal_event<TEvent>::get()) {}
+  constexpr explicit completion(const TEvent &event) : event_(event) {}
+  const TEvent &event_;
 };
 template <class T, class TEvent = T>
 struct on_entry : internal_event, entry_exit {
   constexpr static auto c_str() { return "on_entry"; }
-  constexpr explicit on_entry(const TEvent &event = {}) : event_(event) {}
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr on_entry() : event_(default_internal_event<TEvent>::get()) {}
+  constexpr explicit on_entry(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
 template <class T, class TEvent = T>
 struct on_exit : internal_event, entry_exit {
   constexpr static auto c_str() { return "on_exit"; }
-  constexpr explicit on_exit(const TEvent &event = {}) : event_(event) {}
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr on_exit() : event_(default_internal_event<TEvent>::get()) {}
+  constexpr explicit on_exit(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
 template <class T, class TException = T>
 struct exception : internal_event {
   using type = TException;
-  constexpr explicit exception(const TException &exception = {}) : exception_(exception) {}
+  template <class U = TException, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr exception() : exception_(default_internal_event<TException>::get()) {}
+  constexpr explicit exception(const TException &exception) : exception_(exception) {}
   const TException &exception_;
 };
 template <class T, class TEvent = T>
 struct unexpected_event : internal_event, unexpected {
-  constexpr explicit unexpected_event(const TEvent &event = {}) : event_(event) {}
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr unexpected_event() : event_(default_internal_event<TEvent>::get()) {}
+  constexpr explicit unexpected_event(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
 template <class TEvent>
@@ -1125,6 +1151,26 @@ template <class TEvent>
 using get_generic_t = typename event_type<TEvent>::generic_t;
 template <class TEvent>
 using get_mapped_t = typename event_type<TEvent>::mapped_t;
+template <class TEvent>
+constexpr const TEvent &get_origin_event(const TEvent &event) {
+  return event;
+}
+template <class T, class TEvent>
+constexpr const TEvent &get_origin_event(const unexpected_event<T, TEvent> &event) {
+  return event.event_;
+}
+template <class T, class TEvent>
+constexpr const TEvent &get_origin_event(const on_entry<T, TEvent> &event) {
+  return event.event_;
+}
+template <class T, class TEvent>
+constexpr const TEvent &get_origin_event(const on_exit<T, TEvent> &event) {
+  return event.event_;
+}
+template <class T, class TException>
+constexpr const TException &get_origin_event(const exception<T, TException> &event) {
+  return event.exception_;
+}
 template <class... TEvents>
 struct process : queue_handler<TEvents...> {
   using queue_handler<TEvents...>::queue_handler;
@@ -1860,28 +1906,28 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
     return handled && queued_handled;
   }
   template <class TOriginEvent, class TDeps, class TSubs>
-  constexpr bool process_completion_event(TDeps &deps, TSubs &subs, aux::true_type) {
-    return process_internal_events(completion<TOriginEvent>{}, deps, subs);
+  constexpr bool process_completion_event(const TOriginEvent &event, TDeps &deps, TSubs &subs, aux::true_type) {
+    return process_internal_events(completion<TOriginEvent>{event}, deps, subs);
   }
   template <class TOriginEvent, class TDeps, class TSubs>
-  constexpr bool process_completion_event(TDeps &, TSubs &, aux::false_type) {
+  constexpr bool process_completion_event(const TOriginEvent &, TDeps &, TSubs &, aux::false_type) {
     return false;
   }
   template <class TOriginEvent, class TDeps, class TSubs>
-  constexpr bool process_post_event_step(TDeps &deps, TSubs &subs) {
+  constexpr bool process_post_event_step(const TOriginEvent &event, TDeps &deps, TSubs &subs) {
     return process_completion_event<TOriginEvent>(
-               deps, subs, typename aux::is_base_of<completion<TOriginEvent>, events_ids_t>::type{}) ||
+               event, deps, subs, typename aux::is_base_of<completion<TOriginEvent>, events_ids_t>::type{}) ||
            process_internal_events(anonymous{}, deps, subs);
   }
   template <class TOriginEvent, class TDeps, class TSubs>
-  constexpr void process_post_events(TDeps &deps, TSubs &subs) {
-    while (process_post_event_step<TOriginEvent>(deps, subs)) {
+  constexpr void process_post_events(const TOriginEvent &event, TDeps &deps, TSubs &subs) {
+    while (process_post_event_step<TOriginEvent>(event, deps, subs)) {
     }
   }
   template <class TOriginEvent, class TEvent, class TDeps, class TSubs>
   constexpr bool process_event_and_post_events(const TEvent &event, TDeps &deps, TSubs &subs) {
     const bool handled = process_internal_events(event, deps, subs);
-    process_post_events<TOriginEvent>(deps, subs);
+    process_post_events<TOriginEvent>(get_origin_event(event), deps, subs);
     return handled;
   }
   constexpr void initialize(const aux::type_list<> &) {}
@@ -2351,6 +2397,14 @@ template <class T, class TEvent, class Tsm, class TDeps>
 constexpr decltype(auto) get_arg(const aux::type_wrapper<const TEvent &> &, const back::on_exit<T, TEvent> &event, Tsm &, TDeps &) {
   return event.event_;
 }
+template <class TEvent, class Tsm, class TDeps>
+constexpr decltype(auto) get_arg(const aux::type_wrapper<const TEvent &> &, const back::completion<TEvent> &event, Tsm &, TDeps &) {
+  return event.event_;
+}
+template <class TEvent, class Tsm, class TDeps>
+constexpr decltype(auto) get_arg(const aux::type_wrapper<TEvent> &, const back::completion<TEvent> &event, Tsm &, TDeps &) {
+  return event.event_;
+}
 template <class T, class TEvent, class Tsm, class TDeps>
 constexpr decltype(auto) get_arg(const aux::type_wrapper<const TEvent &> &, const back::exception<T, TEvent> &event, Tsm &, TDeps &) {
   return event.exception_;
@@ -2645,7 +2699,10 @@ struct event {
   constexpr auto operator/(const T &t) const {
     return transition_ea<event, aux::zero_wrapper<T>>{*this, aux::zero_wrapper<T>{t}};
   }
-  constexpr auto operator()() const { return TEvent{}; }
+  template <class U = TEvent, __BOOST_SML_REQUIRES(aux::is_constructible<U>::value)>
+  constexpr auto operator()() const {
+    return U{};
+  }
 };
 }  // namespace front
 namespace front {
@@ -2753,6 +2810,18 @@ struct ignore<E, aux::type_list<Ts...>> {
         aux::conditional_t<aux::is_same<back::get_event_t<E>, aux::remove_const_t<aux::remove_reference_t<T>>>::value ||
                                aux::is_same<T, action_base>::value,
                            aux::type_list<>, aux::type_list<T>>;
+  };
+  using type = aux::join_t<typename non_events<Ts>::type...>;
+};
+template <class TEvent, class... Ts>
+struct ignore<back::completion<TEvent>, aux::type_list<Ts...>> {
+  template <class T>
+  struct non_events {
+    using arg_t = aux::remove_const_t<aux::remove_reference_t<T>>;
+    using type = aux::conditional_t<aux::is_same<TEvent, arg_t>::value ||
+                                        aux::is_same<back::completion<TEvent>, arg_t>::value ||
+                                        aux::is_same<T, action_base>::value,
+                                    aux::type_list<>, aux::type_list<T>>;
   };
   using type = aux::join_t<typename non_events<Ts>::type...>;
 };

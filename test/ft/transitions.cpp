@@ -89,13 +89,17 @@ test anonymous_transition = [] {
 };
 
 test completion_transition_runs_before_anonymous = [] {
+  struct payload {
+    int value{};
+  };
+
   struct c {
     auto operator()() noexcept {
       using namespace sml;
       // clang-format off
       return make_transition_table(
-         *idle + event<e1> = s1
-        ,s1 + completion<e1> / [this] { calls += "completion|"; } = s2
+         *idle + event<payload> = s1
+        ,s1 + completion<payload> / [this](const payload& event) { calls += "completion(" + std::to_string(event.value) + ")|"; } = s2
         ,s1 / [this] { calls += "anonymous_s1|"; } = s3
         ,s2 / [this] { calls += "anonymous_s2|"; } = s4
       );
@@ -106,10 +110,10 @@ test completion_transition_runs_before_anonymous = [] {
   };
 
   sml::sm<c> sm{};
-  expect(sm.process_event(e1{}));
+  expect(sm.process_event(payload{42}));
   expect(sm.is(s4));
   expect(!sm.is(s3));
-  expect(static_cast<const c&>(sm).calls == "completion|anonymous_s2|");
+  expect(static_cast<const c&>(sm).calls == "completion(42)|anonymous_s2|");
 };
 
 test subsequent_anonymous_transitions = [] {
