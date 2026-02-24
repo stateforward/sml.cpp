@@ -1058,6 +1058,10 @@ struct internal_event {
 struct anonymous : internal_event {
   constexpr static auto c_str() { return "anonymous"; }
 };
+template <class TEvent>
+struct completion : internal_event {
+  constexpr static auto c_str() { return "completion"; }
+};
 template <class T, class TEvent = T>
 struct on_entry : internal_event, entry_exit {
   constexpr static auto c_str() { return "on_entry"; }
@@ -1477,6 +1481,9 @@ struct get_event_mapping_impl_helper<on_entry<T1, T2>, TMappings>
 template <class T1, class T2, class TMappings>
 struct get_event_mapping_impl_helper<on_exit<T1, T2>, TMappings>
     : decltype(get_event_mapping_impl<on_exit<T1, T2>>((TMappings *)0)) {};
+template <class TEvent, class TMappings>
+struct get_event_mapping_impl_helper<completion<TEvent>, TMappings>
+    : decltype(get_event_mapping_impl<completion<TEvent>>((TMappings *)0)) {};
 template <class TMappings>
 struct get_event_mapping_impl_helper<anonymous, TMappings> : decltype(get_event_mapping_impl<anonymous>((TMappings *)0)) {};
 template <class T, class TMappings>
@@ -1822,17 +1829,40 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
     (void)lock;
     bool changed = false;
     state_t old = current_state_[0];
-    bool handled = process_internal_events(event, deps, subs);
+    bool handled = process_event_and_post_events<get_event_t<TEvent>>(event, deps, subs);
     bool queued_handled = true;
     do {
       do {
-        while (process_internal_events(anonymous{}, deps, subs)) {
-        }
         changed = (old != current_state_[0]);
         old = current_state_[0];
       } while (process_defer_events(deps, subs, changed, aux::type_wrapper<defer_queue_t<TEvent>>{}, events_t{}));
     } while (process_queued_events(deps, subs, queued_handled, aux::type_wrapper<process_queue_t<TEvent>>{}, events_t{}));
     return handled && queued_handled;
+  }
+  template <class TOriginEvent, class TDeps, class TSubs>
+  constexpr bool process_completion_event(TDeps &deps, TSubs &subs, aux::true_type) {
+    return process_internal_events(completion<TOriginEvent>{}, deps, subs);
+  }
+  template <class TOriginEvent, class TDeps, class TSubs>
+  constexpr bool process_completion_event(TDeps &, TSubs &, aux::false_type) {
+    return false;
+  }
+  template <class TOriginEvent, class TDeps, class TSubs>
+  constexpr bool process_post_event_step(TDeps &deps, TSubs &subs) {
+    return process_completion_event<TOriginEvent>(
+               deps, subs, typename aux::is_base_of<completion<TOriginEvent>, events_ids_t>::type{}) ||
+           process_internal_events(anonymous{}, deps, subs);
+  }
+  template <class TOriginEvent, class TDeps, class TSubs>
+  constexpr void process_post_events(TDeps &deps, TSubs &subs) {
+    while (process_post_event_step<TOriginEvent>(deps, subs)) {
+    }
+  }
+  template <class TOriginEvent, class TEvent, class TDeps, class TSubs>
+  constexpr bool process_event_and_post_events(const TEvent &event, TDeps &deps, TSubs &subs) {
+    const bool handled = process_internal_events(event, deps, subs);
+    process_post_events<TOriginEvent>(deps, subs);
+    return handled;
   }
   constexpr void initialize(const aux::type_list<> &) {}
   template <class TState>
@@ -2007,7 +2037,7 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   template <class TDeps, class TSubs, class TEvent>
   constexpr bool process_event_no_defer(TDeps &deps, TSubs &subs, const void *data) {
     const auto &event = *static_cast<const TEvent *>(data);
-    bool handled = process_internal_events(event, deps, subs);
+    bool handled = process_event_and_post_events<get_event_t<TEvent>>(event, deps, subs);
     if (handled && defer_again_) {
       ++defer_it_;
     } else {
@@ -2048,13 +2078,7 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   template <class TDeps, class TSubs, class TEvent>
   constexpr bool process_event_no_queue(TDeps &deps, TSubs &subs, const void *data) {
     const auto &event = *static_cast<const TEvent *>(data);
-    policies::log_process_event<sm_t>(aux::type_wrapper<logger_t>{}, deps, event);
-#if BOOST_SML_DISABLE_EXCEPTIONS
-    return process_event_impl<get_event_mapping_t<TEvent, mappings>>(event, deps, subs, states_t{},
-                                                                     aux::make_index_sequence<regions>{});
-#else
-    return process_event_except_impl<get_event_mapping_t<TEvent, mappings>>(event, deps, subs, has_exceptions{});
-#endif
+    return process_event_and_post_events<get_event_t<TEvent>>(event, deps, subs);
   }
   template <class TDeps, class TSubs, class TDeferQueue, class... TEvents>
   bool process_queued_events(TDeps &deps, TSubs &subs, bool &queued_handled, const aux::type_wrapper<TDeferQueue> &, const aux::type_list<TEvents...> &) {
@@ -3204,6 +3228,8 @@ template <class TEvent>
 front::event<back::unexpected_event<TEvent>> unexpected_event __BOOST_SML_VT_INIT;
 template <class T>
 front::event<back::exception<T>> exception __BOOST_SML_VT_INIT;
+template <class TEvent>
+using completion = back::completion<TEvent>;
 using anonymous = back::anonymous;
 using initial = back::initial;
 #if !(defined(_MSC_VER) && !defined(__clang__))
