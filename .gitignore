@@ -1,5 +1,6 @@
 /build*/
 /BUILD*/
+benchmark/smlang_player/target/
 /*.log
 *.out
 .vs

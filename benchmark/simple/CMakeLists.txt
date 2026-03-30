@@ -14,4 +14,16 @@ add_example(simple_sc benchmark_simple_sc sc.cpp)
 if (NOT IS_MSVC_2015)
   add_example(simple_sml benchmark_simple_sml sml.cpp)
   add_example(simple_co_sm benchmark_simple_co_sm co_sm.cpp)
+
+  # Same source as simple_sml; undefine CHECK_COMPILE_TIME so benchmark.hpp measures runtime (pairs with smlang_player).
+  add_executable(sml_player sml.cpp)
+  target_link_libraries(sml_player PUBLIC sml)
+  if (IS_COMPILER_OPTION_MSVC_LIKE)
+    target_compile_options(sml_player PRIVATE /UCHECK_COMPILE_TIME)
+  else()
+    target_compile_options(sml_player PRIVATE -UCHECK_COMPILE_TIME)
+  endif()
+
+  add_executable(sml_player_gbench sml_gbench.cpp)
+  target_link_libraries(sml_player_gbench PRIVATE sml benchmark::benchmark)
 endif()
