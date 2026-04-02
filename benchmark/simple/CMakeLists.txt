@@ -12,16 +12,19 @@ set(CMAKE_CXX_STANDARD ${CURRENT_CXX_STANDARD})
 add_example(simple_sc benchmark_simple_sc sc.cpp)
 
 if (NOT IS_MSVC_2015)
-  add_example(simple_sml benchmark_simple_sml sml.cpp)
   add_example(simple_co_sm benchmark_simple_co_sm co_sm.cpp)
 
-  # Same source as simple_sml; undefine CHECK_COMPILE_TIME so benchmark.hpp measures runtime (pairs with smlang_player).
-  add_executable(sml_player sml.cpp)
-  target_link_libraries(sml_player PUBLIC sml)
-  if (IS_COMPILER_OPTION_MSVC_LIKE)
-    target_compile_options(sml_player PRIVATE /UCHECK_COMPILE_TIME)
-  else()
-    target_compile_options(sml_player PRIVATE -UCHECK_COMPILE_TIME)
+  if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sml_player_sm.hpp")
+    add_example(simple_sml benchmark_simple_sml sml.cpp)
+
+    # Same source as simple_sml; undefine CHECK_COMPILE_TIME so benchmark.hpp measures runtime (pairs with smlang_player).
+    add_executable(sml_player sml.cpp)
+    target_link_libraries(sml_player PUBLIC sml)
+    if (IS_COMPILER_OPTION_MSVC_LIKE)
+      target_compile_options(sml_player PRIVATE /UCHECK_COMPILE_TIME)
+    else()
+      target_compile_options(sml_player PRIVATE -UCHECK_COMPILE_TIME)
+    endif()
   endif()
 
   if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sml_gbench.cpp")
