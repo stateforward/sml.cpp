@@ -5,13 +5,13 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <boost/sml.hpp>
+#include <stateforward/sml.hpp>
 #include <cassert>
 #include <iostream>
 
-#include "boost/sml/utility/dispatch_table.hpp"
+#include <stateforward/sml/utility/dispatch_table.hpp>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 // clang-format off
 #if __has_include(<SDL2/SDL_events.h>)

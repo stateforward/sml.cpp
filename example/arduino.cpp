@@ -4,7 +4,7 @@
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <boost/sml.hpp>
+#include <stateforward/sml.hpp>
 
 #if __has_include(<Arduino.h>)
 #include <Arduino.h>
@@ -43,13 +43,13 @@ struct switcher {
   }
 
   constexpr auto operator()() const {
-    const auto event = []<class TEvent>(TEvent) { return boost::sml::event<TEvent>; };
+    const auto event = []<class TEvent>(TEvent) { return stateforward::sml::event<TEvent>; };
 
     /**
      * Initial state: *initial_state
      * Transition DSL: src_state + event [ guard ] / action = dst_state
      */
-    using namespace boost::sml;
+    using namespace stateforward::sml;
     return make_transition_table(
       *"off"_s + event(Btn::pressed) [ Btn::on  ] / Led::on  = "on"_s,
        "on"_s  + event(Btn::pressed) [ Btn::off ] / Led::off = "off"_s
@@ -58,7 +58,7 @@ struct switcher {
 };
 
 int main() {
-  for (boost::sml::sm<switcher<button<2>, led<11>>> sm;;) {
+  for (stateforward::sml::sm<switcher<button<2>, led<11>>> sm;;) {
     [&sm]<template<class...> class TList, class... TEvents>(TList<TEvents...>) {
       (sm.process_event(TEvents{}), ...);
     }(decltype(sm)::events{});

@@ -5,12 +5,12 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#include "boost/sml/utility/dispatch_table.hpp"
+#include <stateforward/sml/utility/dispatch_table.hpp>
 
-#include <boost/sml.hpp>
+#include <stateforward/sml.hpp>
 #include <cassert>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 namespace {
 struct runtime_event {

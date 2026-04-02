@@ -1,4 +1,4 @@
-# Support for using the boost::sml as a [Zephyr](https://docs.zephyrproject.org/latest/index.html) module
+# Support for using stateforward::sml as a [Zephyr](https://docs.zephyrproject.org/latest/index.html) module
 
 To use add the reposiory path to your west manifest file, probably `west.yml`. See the zephyr documentation on [project manifests](https://docs.zephyrproject.org/latest/develop/west/manifest.html#projects) for details.
 
@@ -21,4 +21,4 @@ CONFIG_REQUIRES_FULL_LIBCPP=y
 CONFIG_LIB_BOOST_SML=y
 ```
 
-Then you can `#include <boost/sml.hpp>` to use the library.
+Then you can `#include <stateforward/sml.hpp>` to use the library.
