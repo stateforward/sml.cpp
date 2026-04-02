@@ -5,10 +5,9 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <stateforward/sml.hpp>
 #include <cassert>
 #include <iostream>
-
+#include <stateforward/sml.hpp>
 #include <stateforward/sml/utility/dispatch_table.hpp>
 
 namespace sml = stateforward::sml;

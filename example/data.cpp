@@ -6,9 +6,9 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 //
 #define BOOST_SML_CREATE_DEFAULT_CONSTRUCTIBLE_DEPS
-#include <stateforward/sml.hpp>
 #include <cassert>
 #include <iostream>
+#include <stateforward/sml.hpp>
 
 namespace sml = stateforward::sml;
 

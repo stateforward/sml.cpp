@@ -8,9 +8,9 @@
 
 #if __cplusplus >= 201703L
 #include <algorithm>
-#include <stateforward/sml.hpp>
 #include <iostream>
 #include <ostream>
+#include <stateforward/sml.hpp>
 #include <string>
 #include <tuple>
 #include <typeinfo>
@@ -440,9 +440,9 @@ int main() { dump<plant_uml>(std::cout); }
 
 #elif __cplusplus == 201402L
 
-#include <stateforward/sml.hpp>
 #include <cassert>
 #include <iostream>
+#include <stateforward/sml.hpp>
 #include <string>
 #include <typeinfo>
 
