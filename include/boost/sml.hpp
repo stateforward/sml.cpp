@@ -1875,9 +1875,9 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
     static_assert(!(should_not_instantiate_statemachine_class_t::value &&
               aux::would_instantiate_missing_ctor_parameter<sm_t, decltype(&p)>()),
             "When policy sml::dont_instantiate_statemachine_class is used, you have to provide a reference to an "
-            "instance of the transition table type (stateforward::sml::sm< your_transition_table_type >) "
+            "instance of the transition table type (sml::sm< your_transition_table_type >) "
             "as well as a reference to instances of all sub-statemachine types as constructor parameters like this: \n"
-            "stateforward::sml::sm< your_transition_table_type , sml::dont_instantiate_statemachine_class >{\n"
+            "sml::sm< your_transition_table_type , sml::dont_instantiate_statemachine_class >{\n"
             "    your_transition_table_instance\n"
             "}"
   );
