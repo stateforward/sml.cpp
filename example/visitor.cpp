@@ -5,11 +5,11 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <boost/sml.hpp>
 #include <cassert>
 #include <iostream>
+#include <stateforward/sml.hpp>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 struct e1 {};
 struct e2 {};
@@ -48,9 +48,9 @@ class state_name_visitor {
   explicit state_name_visitor(const TSM& sm) : sm_{sm} {}
 
   template <class TSub>
-  void operator()(boost::sml::aux::string<boost::sml::sm<TSub>>) const {
-    std::cout << boost::sml::aux::get_type_name<TSub>() << ':';
-    sm_.template visit_current_states<boost::sml::aux::identity<TSub>>(*this);
+  void operator()(stateforward::sml::aux::string<stateforward::sml::sm<TSub>>) const {
+    std::cout << stateforward::sml::aux::get_type_name<TSub>() << ':';
+    sm_.template visit_current_states<stateforward::sml::aux::identity<TSub>>(*this);
   }
 
   template <class TState>

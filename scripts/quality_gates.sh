@@ -468,9 +468,15 @@ run_benchmarks_gate() {
 
   local -a benchmark_targets=(
     switch
-    simple_sml
     header_sml
   )
+
+  if [[ -f "${REPO_ROOT}/benchmark/simple/sml_player_sm.hpp" ]]; then
+    benchmark_targets+=(
+      simple_sml
+    )
+  fi
+
   cmake --build "${build_dir}" --target "${benchmark_targets[@]}" -j "${JOBS}"
 
   JOBS="${original_jobs}"

@@ -8,16 +8,16 @@
 
 #if __cplusplus >= 201703L
 #include <algorithm>
-#include <boost/sml.hpp>
 #include <iostream>
 #include <ostream>
+#include <stateforward/sml.hpp>
 #include <string>
 #include <tuple>
 #include <typeinfo>
 #include <utility>
 #include <vector>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 struct e1 {};
 struct e2 {};
@@ -306,7 +306,7 @@ void dump_transition(std::ostream& out) noexcept {
 
   if (has_event && has_action && sml::aux::is_same<typename T::action::type, sml::front::actions::defer>::value) {
     do_indent(out, N);
-    out << src_state << " : " << boost::sml::aux::get_type_name<typename T::event>() << " / defer\n";
+    out << src_state << " : " << stateforward::sml::aux::get_type_name<typename T::event>() << " / defer\n";
     return;
   }
 
@@ -440,13 +440,13 @@ int main() { dump<plant_uml>(std::cout); }
 
 #elif __cplusplus == 201402L
 
-#include <boost/sml.hpp>
 #include <cassert>
 #include <iostream>
+#include <stateforward/sml.hpp>
 #include <string>
 #include <typeinfo>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 struct e1 {};
 struct e2 {};
@@ -512,7 +512,7 @@ void dump_transition(std::ostream& out) noexcept {
 
   if (has_event) {
     // handle 'on_entry' and 'on_exit' per plant-uml syntax
-    auto event = std::string(boost::sml::aux::get_type_name<typename T::event>());
+    auto event = std::string(stateforward::sml::aux::get_type_name<typename T::event>());
     if (is_entry) {
       event = "entry";
     } else if (is_exit) {
@@ -522,11 +522,11 @@ void dump_transition(std::ostream& out) noexcept {
   }
 
   if (has_guard) {
-    out << " [" << boost::sml::aux::get_type_name<typename T::guard::type>() << "]";
+    out << " [" << stateforward::sml::aux::get_type_name<typename T::guard::type>() << "]";
   }
 
   if (has_action) {
-    out << " / " << boost::sml::aux::get_type_name<typename T::action::type>();
+    out << " / " << stateforward::sml::aux::get_type_name<typename T::action::type>();
   }
 
   out << "\n";

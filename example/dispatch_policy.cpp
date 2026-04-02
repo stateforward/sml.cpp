@@ -5,10 +5,10 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <boost/sml.hpp>
 #include <cstdio>
+#include <stateforward/sml.hpp>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 struct connect {};
 struct established {};

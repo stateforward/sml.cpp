@@ -5,13 +5,13 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <boost/sml.hpp>
 #include <cassert>
 #include <iostream>
+#include <stateforward/sml.hpp>
 
 int main() {
 #if defined(__cpp_deduction_guides)
-  namespace sml = boost::sml;
+  namespace sml = stateforward::sml;
 
   struct start {};
 

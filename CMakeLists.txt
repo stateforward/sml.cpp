@@ -192,7 +192,9 @@ install(EXPORT smlTargets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sml
 )
 
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/boost
+install(DIRECTORY
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/boost
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/stateforward
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 

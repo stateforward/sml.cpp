@@ -42,13 +42,13 @@ Automated pipeline covering clang-format, clang-tidy, code coverage (90% minimum
 
 ### Download
 
-> Requires only one file. Get the latest header from [`include/boost/sml.hpp`](include/boost/sml.hpp).
+> The default entry point for this fork is [`include/stateforward/sml.hpp`](include/stateforward/sml.hpp). It wraps the upstream-compatible implementation in [`include/boost/sml.hpp`](include/boost/sml.hpp), so both include paths remain available.
 
 ### Include
 
 ```cpp
-#include <boost/sml.hpp>
-namespace sml = boost::sml;
+#include <stateforward/sml.hpp>
+namespace sml = stateforward::sml;
 ```
 
 ### Define events, guards, and actions
@@ -130,7 +130,7 @@ cl /std:c++14 /Ox /W3 tcp_release.cpp
 Coroutine-driven state machine wrapper with configurable scheduling and allocation policies. Requires C++20 with coroutine support.
 
 ```cpp
-#include <boost/sml/utility/co_sm.hpp>
+#include <stateforward/sml/utility/co_sm.hpp>
 
 namespace utility = sml::utility;
 
@@ -164,7 +164,7 @@ bool accepted = task.result();
 A pool container for managing large numbers of state machine instances with efficient indexed and batch dispatch.
 
 ```cpp
-#include <boost/sml/utility/sm_pool.hpp>
+#include <stateforward/sml/utility/sm_pool.hpp>
 
 using namespace sml::utility;
 
@@ -201,7 +201,7 @@ pool.process_event_batch(events);
 Compile-time dispatch table for routing runtime event IDs to typed event handlers.
 
 ```cpp
-#include <boost/sml/utility/dispatch_table.hpp>
+#include <stateforward/sml/utility/dispatch_table.hpp>
 
 struct event1 { static constexpr int id = 1; };
 struct event2 { static constexpr int id = 2; };

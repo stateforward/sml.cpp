@@ -5,14 +5,14 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <boost/sml.hpp>
 #include <cassert>
+#include <stateforward/sml.hpp>
 
 #if defined(__GNUC__) && !defined(__clang__)
 int main() {}
 #else
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 namespace {
 template <class = class Dummy>  // Use a dummy template to delay POI and support nested SM

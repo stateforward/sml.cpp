@@ -9,12 +9,12 @@
 #if __has_include(<boost/di.hpp>)
 // clang-format on
 #include <boost/di.hpp>
-#include <boost/sml.hpp>
 #include <cassert>
 #include <iostream>
+#include <stateforward/sml.hpp>
 #include <typeinfo>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 namespace di = boost::di;
 
 namespace {

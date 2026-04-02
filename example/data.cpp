@@ -6,11 +6,11 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 //
 #define BOOST_SML_CREATE_DEFAULT_CONSTRUCTIBLE_DEPS
-#include <boost/sml.hpp>
 #include <cassert>
 #include <iostream>
+#include <stateforward/sml.hpp>
 
-namespace sml = boost::sml;
+namespace sml = stateforward::sml;
 
 namespace {
 struct connect {
@@ -34,7 +34,7 @@ class data {
   explicit data(const std::string& address) : address{address} {}
 
   auto operator()() {
-    using namespace boost::sml;
+    using namespace stateforward::sml;
 
     const auto set = [](const auto& event, Connected& state) { state.id = event.id; };
     const auto update = [](Connected& src_state, Interrupted& dst_state) { dst_state.id = src_state.id; };
