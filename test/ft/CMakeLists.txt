@@ -19,6 +19,10 @@ add_test(test_composite test_composite)
 add_executable(test_co_sm co_sm.cpp)
 add_test(test_co_sm test_co_sm)
 
+add_executable(test_thread_pool_scheduler thread_pool_scheduler.cpp)
+add_test(test_thread_pool_scheduler test_thread_pool_scheduler)
+target_link_libraries(test_thread_pool_scheduler -lpthread)
+
 add_executable(test_constexpr constexpr.cpp)
 add_test(test_constexpr test_constexpr)
 

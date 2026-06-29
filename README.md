@@ -29,6 +29,7 @@ This fork addresses critical bugs, adds utilities for high-throughput and async 
 
 - **Completion transitions** (`completion<T>`) -- post-event transitions with origin event propagation
 - **Coroutine state machines** (`co_sm`) -- C++20 coroutine-driven SM with configurable scheduler and allocator policies
+- **`thread_pool_scheduler`** -- opt-in C++20 multi-consumer work pool with a lifetime-safe, deadlock-free fork/join latch for action-level inter-op parallelism (warm workers, fixed task ring, no allocation on dispatch)
 - **`sm_pool`** -- pool-based container for managing thousands of SM instances with indexed and batch dispatch
 - **`dispatch_table`** -- compile-time dispatch table for ID-based event routing at zero runtime overhead
 
