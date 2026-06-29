@@ -141,8 +141,13 @@ class thread_pool_scheduler {
     }
   }
 
+  // Unconditionally noexcept (like fifo_scheduler::schedule): when this falls to
+  // the scheduled path the task runs through a noexcept worker thunk, which
+  // cannot propagate an exception back to the waiter, so the API is consistently
+  // no-throw rather than propagate-or-terminate by pool load. Submit noexcept
+  // work (the RTC actor contract); a throwing task calls std::terminate.
   template <class fn>
-  bool run_or_schedule_and_wait(fn&& fn_in) noexcept(noexcept(std::forward<fn>(fn_in)())) {
+  bool run_or_schedule_and_wait(fn&& fn_in) noexcept {
     if (try_run_immediate(std::forward<fn>(fn_in))) {
       return true;
     }
@@ -155,7 +160,7 @@ class thread_pool_scheduler {
     // and can safely let the flag go out of scope (no destroy-during-notify
     // fault). The wait is a bounded RTC join over one already-submitted task.
     std::atomic<bool> done{false};
-    const bool scheduled = try_submit_and_signal([&fn_in]() noexcept(noexcept(fn_in())) { fn_in(); }, done);
+    const bool scheduled = try_submit_and_signal([&fn_in]() noexcept { fn_in(); }, done);
     if (!scheduled) {
       return false;
     }
@@ -510,14 +515,14 @@ class thread_pool_scheduler_ref {
   }
 
   template <class fn>
-  void schedule(fn&& fn_in) noexcept(noexcept(std::forward<fn>(fn_in)())) {
+  void schedule(fn&& fn_in) noexcept {
     if (!scheduler_->run_or_schedule_and_wait(std::forward<fn>(fn_in))) {
       std::terminate();
     }
   }
 
   template <class fn>
-  bool run_or_schedule_and_wait(fn&& fn_in) noexcept(noexcept(std::forward<fn>(fn_in)())) {
+  bool run_or_schedule_and_wait(fn&& fn_in) noexcept {
     return scheduler_->run_or_schedule_and_wait(std::forward<fn>(fn_in));
   }
 

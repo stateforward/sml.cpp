@@ -8,12 +8,26 @@
 #include <atomic>
 #include <boost/sml/utility/thread_pool_scheduler.hpp>
 #include <cstddef>
+#include <utility>
 
 #if BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
 namespace policy = boost::sml::utility::policy;
 
 using pool_t = policy::thread_pool_scheduler<8>;
 using pool_ref_t = policy::thread_pool_scheduler_ref<pool_t>;
+
+// A non-noexcept callable: the scheduled wait/schedule paths must stay
+// unconditionally noexcept (their worker thunk cannot propagate), while the
+// pure-inline try_run_immediate stays conditionally noexcept and may propagate.
+struct may_throw_callable {
+  void operator()() const {}
+};
+static_assert(noexcept(std::declval<pool_ref_t&>().run_or_schedule_and_wait(may_throw_callable{})),
+              "run_or_schedule_and_wait must be unconditionally noexcept");
+static_assert(noexcept(std::declval<pool_ref_t&>().schedule(may_throw_callable{})),
+              "schedule must be unconditionally noexcept");
+static_assert(!noexcept(std::declval<pool_t&>().try_run_immediate(may_throw_callable{})),
+              "try_run_immediate stays conditionally noexcept (inline path propagates)");
 
 test thread_pool_scheduler_runs_task_inline_when_idle = [] {
   pool_t pool{};
