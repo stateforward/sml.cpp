@@ -20,9 +20,16 @@
 // pool scheduler requires C++20 (std::counting_semaphore) and a hosted
 // threading runtime. It compiles to nothing when those are unavailable so the
 // freestanding core stays thread-free by default.
-#if BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_LANG >= 202002L && __has_include(<semaphore>)
+// Nest the __has_include probe under defined(__has_include) so toolchains
+// without the extension (or below C++20) never have to parse it.
+#if BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_LANG >= 202002L
+#if defined(__has_include)
+#if __has_include(<semaphore>)
 #define BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED 1
-#else
+#endif
+#endif
+#endif
+#ifndef BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
 #define BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED 0
 #endif
 
@@ -443,7 +450,14 @@ class thread_pool_scheduler_ref {
       while (pending_.load(std::memory_order_acquire) != 0u) {
         cpu_relax();
       }
-      return accepted_.load(std::memory_order_acquire);
+      // pending_ == 0 means every completer is done touching the group, so the
+      // owning thread can now read and clear accepted_ with no contention. The
+      // clear lets a stack-reused join_group start the next round clean: without
+      // it, a single rejected lane would make wait() return false on every later
+      // round even when all lanes succeed.
+      const bool accepted = accepted_.load(std::memory_order_acquire);
+      accepted_.store(true, std::memory_order_release);
+      return accepted;
     }
 
    private:

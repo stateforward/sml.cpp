@@ -40,6 +40,32 @@ test thread_pool_scheduler_fork_join_runs_every_lane = [] {
   expect(8 == calls.load(std::memory_order_acquire));
 };
 
+// A stack-reused join_group must start each round clean: a rejection in one round
+// must not make a later all-success round report failure. (try_submit from inside
+// a worker is rejected, since a worker cannot fork into its own pool.)
+test thread_pool_scheduler_reused_join_group_clears_prior_rejection = [] {
+  pool_t pool{};
+  pool_ref_t scheduler{pool};
+  pool_ref_t::join_group group{};
+
+  // Round 1: drive a worker that tries to submit into `group` -> rejected.
+  std::atomic<bool> rejected_on_worker{false};
+  pool_ref_t::join_group driver{};
+  scheduler.try_submit(driver,
+                       [&] { rejected_on_worker.store(!scheduler.try_submit(group, [] {}), std::memory_order_release); });
+  driver.wait();
+  expect(rejected_on_worker.load(std::memory_order_acquire));
+  expect(!group.wait());  // the rejection is observed once...
+
+  // Round 2: same group, all lanes succeed -> must report accepted again.
+  std::atomic<int> calls{0};
+  for (std::size_t lane = 0; lane < 4u; ++lane) {
+    scheduler.try_submit(group, [&calls] { calls.fetch_add(1, std::memory_order_relaxed); });
+  }
+  expect(group.wait());  // ...and must not stick to false on the next round
+  expect(4 == calls.load(std::memory_order_acquire));
+};
+
 // Regression guard for the join-latch deadlock: under rapid, repeated fork/join
 // with lane_count == worker_count, a Dekker-race close/complete handshake plus a
 // destroy-during-release semaphore could strand a wakeup. The lifetime-safe
