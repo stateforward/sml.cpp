@@ -241,6 +241,13 @@ class thread_pool_scheduler {
     for (std::size_t i = 0; i < capacity; ++i) {
       tasks_[i].sequence.store(i, std::memory_order_relaxed);
     }
+#if BOOST_SML_DISABLE_EXCEPTIONS
+    // No-exceptions builds cannot observe a failed std::thread spawn (it calls
+    // std::terminate), so there is nothing to roll back; spawn directly.
+    for (std::size_t started = 0u; started < worker_count; ++started) {
+      workers_[started] = std::thread([this]() noexcept { worker_loop(); });
+    }
+#else
     std::size_t started = 0u;
     try {
       for (; started < worker_count; ++started) {
@@ -258,6 +265,7 @@ class thread_pool_scheduler {
       }
       throw;
     }
+#endif
   }
 
   void stop_workers() noexcept {
