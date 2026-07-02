@@ -60,10 +60,14 @@ namespace policy {
 class completion_source {
  public:
   // Trampoline compatible with thread_pool_scheduler::try_submit_with_completion.
+  // Only the transition into fired releases a wakeup permit, so a misbehaving
+  // producer that fires twice cannot accumulate permits or overflow the
+  // semaphore's max count.
   static void fire(void* ctx) noexcept {
     auto* source = static_cast<completion_source*>(ctx);
-    source->state_.store(state_fired, std::memory_order_release);
-    source->wakeup_->release();
+    if (source->state_.exchange(state_fired, std::memory_order_release) != state_fired) {
+      source->wakeup_->release();
+    }
   }
 
   void arm() noexcept { state_.store(state_pending, std::memory_order_relaxed); }
@@ -140,6 +144,15 @@ class external_completion_scheduler {
   }
 
   completion_source& source(const std::size_t index) noexcept { return sources_[index]; }
+
+  // Clears bookkeeping an aborted dispatch may have left behind (for example
+  // a state-machine action that threw after require()): required bits and a
+  // parked handle are meaningless outside the dispatch that created them, and
+  // stale required bits would otherwise block the next drain forever.
+  void reset_dispatch_state() noexcept {
+    required_ = 0;
+    parked_ = nullptr;
+  }
 
   // Marks a source as blocking the current dispatch. Consumer thread only
   // (machine actions via an injected scheduler pointer).

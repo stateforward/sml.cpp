@@ -309,19 +309,18 @@ concept has_try_run_immediate = requires(TScheduler scheduler) {
 // strict ordering contract: required completions are drained before the
 // top-level dispatch returns, and delivery order is deterministic.
 template <class TScheduler>
-concept external_completion_scheduler_contract =
-    requires {
-      { TScheduler::external_completion } -> std::convertible_to<bool>;
-      { TScheduler::npos } -> std::convertible_to<std::size_t>;
-      typename TScheduler::completion_event;
-    } && static_cast<bool>(TScheduler::external_completion) &&
-    requires(TScheduler scheduler) {
-      { scheduler.has_required() } -> std::convertible_to<bool>;
-      { scheduler.sweep_next_fired() } -> std::same_as<std::size_t>;
-      scheduler.next_fired_required();
-      scheduler.wait_any();
-      { scheduler.try_resume_parked() } -> std::same_as<bool>;
-    };
+concept external_completion_scheduler_contract = requires {
+  { TScheduler::external_completion } -> std::convertible_to<bool>;
+  { TScheduler::npos } -> std::convertible_to<std::size_t>;
+  typename TScheduler::completion_event;
+} && static_cast<bool>(TScheduler::external_completion) && requires(TScheduler scheduler) {
+  { scheduler.has_required() } -> std::convertible_to<bool>;
+  { scheduler.sweep_next_fired() } -> std::same_as<std::size_t>;
+  scheduler.next_fired_required();
+  scheduler.wait_any();
+  { scheduler.try_resume_parked() } -> std::same_as<bool>;
+  scheduler.reset_dispatch_state();
+};
 
 template <class TAllocatorPolicy>
 concept valid_coroutine_allocator_policy = requires { typename TAllocatorPolicy::allocator_type; };
@@ -602,7 +601,9 @@ class co_sm {
       // The dispatch coroutine may suspend awaiting externally fired
       // completions; drive it to completion here so the run-to-completion
       // contract holds: nothing observable escapes this call, and resumption
-      // happens only on this (the dispatching) thread.
+      // happens only on this (the dispatching) thread. Any required bits or
+      // parked handle left by a previous aborted dispatch are cleared first.
+      scheduler_.reset_dispatch_state();
       bool_task task = process_event_external_impl(std::allocator_arg, allocator_, *this, event);
       while (!task.await_ready()) {
         scheduler_.wait_any();
@@ -668,8 +669,12 @@ class co_sm {
   // sources the machine marked required are awaited (suspending this coroutine)
   // and re-entered as completion events until none remain. The caller's drive
   // loop in process_event resumes the coroutine on the dispatching thread only.
+  // The trigger event is taken by reference: the coroutine is always driven
+  // to completion inside the enclosing process_event call, so the caller's
+  // event outlives the frame and non-copyable event types stay supported.
   template <class TEvent>
-  static bool_task process_event_external_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self, TEvent event)
+  static bool_task process_event_external_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self,
+                                               const TEvent& event)
     requires policy::external_completion_scheduler_contract<scheduler_type>
   {
     (void)allocator;

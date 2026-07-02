@@ -13,6 +13,7 @@
 #include <boost/sml/utility/thread_pool_scheduler.hpp>
 #include <chrono>
 #include <cstddef>
+#include <stdexcept>
 #include <thread>
 
 namespace sml = boost::sml;
@@ -121,9 +122,9 @@ struct machine {
   }
 };
 
-using co_sm_t = utility::co_sm<machine, utility::policy::coroutine_scheduler<scheduler_t>,
-                               utility::policy::coroutine_allocator<utility::policy::pooled_coroutine_allocator<>>,
-                               test_context>;
+using co_sm_t =
+    utility::co_sm<machine, utility::policy::coroutine_scheduler<scheduler_t>,
+                   utility::policy::coroutine_allocator<utility::policy::pooled_coroutine_allocator<>>, test_context>;
 
 struct fixture {
   pool_t pool{};
@@ -215,6 +216,77 @@ test external_completion_async_wrapper_completes_inline = [] {
   expect(task.result());
   expect(2u == f.context.log_count);
 };
+
+test external_completion_double_fire_releases_one_permit = [] {
+  fixture f{};
+
+  // A misbehaving producer fires the same source twice: only the transition
+  // into fired may release a permit, so exactly one completion is delivered
+  // and no stray permit disturbs a later dispatch.
+  f.context.scheduler->source(2).arm();
+  utility::policy::completion_source::fire(&f.context.scheduler->source(2));
+  utility::policy::completion_source::fire(&f.context.scheduler->source(2));
+
+  expect(f.machine_instance.process_event(e_probe{}));
+  expect(2u == f.context.log_count);
+  expect(2u == f.context.log[0]);
+  expect(k_probe_marker == f.context.log[1]);
+
+  f.context.log_count = 0;
+  expect(f.machine_instance.process_event(e_require_fired_inline{1}));
+  expect(1u == f.context.log_count);
+  expect(0u == f.context.log[0]);
+};
+
+#if !defined(BOOST_SML_DISABLE_EXCEPTIONS) || !BOOST_SML_DISABLE_EXCEPTIONS
+struct e_require_then_throw {};
+
+test external_completion_aborted_dispatch_does_not_poison_next = [] {
+  fixture f{};
+
+  struct throwing_machine {
+    auto operator()() const {
+      using namespace sml;
+      const auto a_require_then_throw = [](const e_require_then_throw&, test_context& context) {
+        context.scheduler->require(4);  // never armed, never fired
+        throw std::runtime_error{"abort after require"};
+      };
+      const auto a_probe = [](const e_probe&, test_context& context) { context.log[context.log_count++] = k_probe_marker; };
+      const auto a_record = [](const utility::completion& ev, test_context& context) {
+        context.log[context.log_count++] = ev.source_index;
+      };
+      // clang-format off
+      return make_transition_table(
+        *"ready"_s + event<e_require_then_throw> / a_require_then_throw
+        , "ready"_s + event<e_probe> / a_probe
+        , "ready"_s + event<utility::completion> / a_record
+      );
+      // clang-format on
+    }
+  };
+
+  using throwing_co_sm =
+      utility::co_sm<throwing_machine, utility::policy::coroutine_scheduler<scheduler_t>,
+                     utility::policy::coroutine_allocator<utility::policy::pooled_coroutine_allocator<>>, test_context>;
+  test_context context{};
+  throwing_co_sm machine{context};
+  context.scheduler = &machine.scheduler();
+
+  bool threw = false;
+  try {
+    (void)machine.process_event(e_require_then_throw{});
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  expect(threw);
+
+  // Pre-fix, the stale required bit for the never-fired source 4 would make
+  // this dispatch's drain block forever; post-fix it completes immediately.
+  expect(machine.process_event(e_probe{}));
+  expect(1u == context.log_count);
+  expect(k_probe_marker == context.log[0]);
+};
+#endif
 
 test external_completion_sources_reusable_across_dispatches = [] {
   fixture f{};
