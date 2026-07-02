@@ -303,6 +303,26 @@ concept has_try_run_immediate = requires(TScheduler scheduler) {
   } -> std::same_as<bool>;
 };
 
+// Structural contract for schedulers that deliver externally fired completions
+// (see utility/external_completion.hpp). Detected duck-typed so this header
+// stays independent of the opt-in module. Such schedulers still honor the
+// strict ordering contract: required completions are drained before the
+// top-level dispatch returns, and delivery order is deterministic.
+template <class TScheduler>
+concept external_completion_scheduler_contract =
+    requires {
+      { TScheduler::external_completion } -> std::convertible_to<bool>;
+      { TScheduler::npos } -> std::convertible_to<std::size_t>;
+      typename TScheduler::completion_event;
+    } && static_cast<bool>(TScheduler::external_completion) &&
+    requires(TScheduler scheduler) {
+      { scheduler.has_required() } -> std::convertible_to<bool>;
+      { scheduler.sweep_next_fired() } -> std::same_as<std::size_t>;
+      scheduler.next_fired_required();
+      scheduler.wait_any();
+      { scheduler.try_resume_parked() } -> std::same_as<bool>;
+    };
+
 template <class TAllocatorPolicy>
 concept valid_coroutine_allocator_policy = requires { typename TAllocatorPolicy::allocator_type; };
 
@@ -578,7 +598,20 @@ class co_sm {
 
   template <class TEvent>
   bool process_event(const TEvent& event) {
-    return state_machine_.process_event(event);
+    if constexpr (policy::external_completion_scheduler_contract<scheduler_type>) {
+      // The dispatch coroutine may suspend awaiting externally fired
+      // completions; drive it to completion here so the run-to-completion
+      // contract holds: nothing observable escapes this call, and resumption
+      // happens only on this (the dispatching) thread.
+      bool_task task = process_event_external_impl(std::allocator_arg, allocator_, *this, event);
+      while (!task.await_ready()) {
+        scheduler_.wait_any();
+        (void)scheduler_.try_resume_parked();
+      }
+      return task.result();
+    } else {
+      return state_machine_.process_event(event);
+    }
   }
 
   template <class TEvent>
@@ -586,19 +619,21 @@ class co_sm {
     using event_t = typename std::decay<TEvent>::type;
     event_t event_copy(static_cast<TEvent&&>(event));
 
-    if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
+    if constexpr (policy::external_completion_scheduler_contract<scheduler_type>) {
+      return bool_task::from_value(process_event(event_copy));
+    } else if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
       return bool_task::from_value(state_machine_.process_event(event_copy));
-    }
-
-    if constexpr (policy::has_try_run_immediate<scheduler_type>) {
-      bool accepted = false;
-      if (scheduler_.try_run_immediate(
-              [this, &event_copy, &accepted]() { accepted = state_machine_.process_event(event_copy); })) {
-        return bool_task::from_value(accepted);
+    } else {
+      if constexpr (policy::has_try_run_immediate<scheduler_type>) {
+        bool accepted = false;
+        if (scheduler_.try_run_immediate(
+                [this, &event_copy, &accepted]() { accepted = state_machine_.process_event(event_copy); })) {
+          return bool_task::from_value(accepted);
+        }
       }
-    }
 
-    return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
+      return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
+    }
   }
 
   template <class TState>
@@ -625,6 +660,34 @@ class co_sm {
   static bool_task process_event_async_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self, TEvent&& event) {
     (void)allocator;
     co_return co_await process_event_awaitable<typename std::decay<TEvent>::type>{self, static_cast<TEvent&&>(event)};
+  }  // GCOVR_EXCL_LINE
+
+  // External-completion dispatch: (1) commit sweep — completions fired between
+  // dispatches are delivered as explicit completion events in ascending source
+  // order before the trigger runs; (2) the trigger event dispatches; (3) any
+  // sources the machine marked required are awaited (suspending this coroutine)
+  // and re-entered as completion events until none remain. The caller's drive
+  // loop in process_event resumes the coroutine on the dispatching thread only.
+  template <class TEvent>
+  static bool_task process_event_external_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self, TEvent event)
+    requires policy::external_completion_scheduler_contract<scheduler_type>
+  {
+    (void)allocator;
+    using completion_event_t = typename scheduler_type::completion_event;
+
+    for (std::size_t index = self.scheduler_.sweep_next_fired(); index != scheduler_type::npos;
+         index = self.scheduler_.sweep_next_fired()) {
+      (void)self.state_machine_.process_event(completion_event_t{index});
+    }
+
+    bool accepted = self.state_machine_.process_event(event);
+
+    while (self.scheduler_.has_required()) {
+      const std::size_t index = co_await self.scheduler_.next_fired_required();
+      accepted = self.state_machine_.process_event(completion_event_t{index}) && accepted;
+    }
+
+    co_return accepted;
   }  // GCOVR_EXCL_LINE
 
   template <class TEvent>

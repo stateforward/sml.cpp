@@ -23,6 +23,10 @@ add_executable(test_thread_pool_scheduler thread_pool_scheduler.cpp)
 add_test(test_thread_pool_scheduler test_thread_pool_scheduler)
 target_link_libraries(test_thread_pool_scheduler -lpthread)
 
+add_executable(test_external_completion external_completion.cpp)
+add_test(test_external_completion test_external_completion)
+target_link_libraries(test_external_completion -lpthread)
+
 add_executable(test_constexpr constexpr.cpp)
 add_test(test_constexpr test_constexpr)
 
