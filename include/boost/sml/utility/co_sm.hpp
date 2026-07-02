@@ -316,9 +316,8 @@ concept external_completion_scheduler_contract = requires {
 } && static_cast<bool>(TScheduler::external_completion) && requires(TScheduler scheduler) {
   { scheduler.has_required() } -> std::convertible_to<bool>;
   { scheduler.sweep_next_fired() } -> std::same_as<std::size_t>;
-  scheduler.next_fired_required();
+  { scheduler.consume_next_fired_required() } -> std::same_as<std::size_t>;
   scheduler.wait_any();
-  { scheduler.try_resume_parked() } -> std::same_as<bool>;
   scheduler.reset_dispatch_state();
 };
 
@@ -598,18 +597,50 @@ class co_sm {
   template <class TEvent>
   bool process_event(const TEvent& event) {
     if constexpr (policy::external_completion_scheduler_contract<scheduler_type>) {
-      // The dispatch coroutine may suspend awaiting externally fired
-      // completions; drive it to completion here so the run-to-completion
-      // contract holds: nothing observable escapes this call, and resumption
-      // happens only on this (the dispatching) thread. Any required bits or
-      // parked handle left by a previous aborted dispatch are cleared first.
-      scheduler_.reset_dispatch_state();
-      bool_task task = process_event_external_impl(std::allocator_arg, allocator_, *this, event);
-      while (!task.await_ready()) {
-        scheduler_.wait_any();
-        (void)scheduler_.try_resume_parked();
+      // Only the outermost dispatch owns the completion machinery: a nested
+      // synchronous process_event from a transition action dispatches its
+      // trigger plainly, and any sources it marks required are drained by the
+      // enclosing dispatch before that dispatch returns. Resetting or
+      // draining from the nested call would clear required bits the outer
+      // drain still needs.
+      if (external_dispatch_depth_ > 0) {
+        return state_machine_.process_event(event);
       }
-      return task.result();
+
+      struct dispatch_depth_scope {
+        std::size_t& depth;
+        ~dispatch_depth_scope() noexcept { --depth; }
+      };
+      ++external_dispatch_depth_;
+      dispatch_depth_scope depth_scope{external_dispatch_depth_};
+
+      // Synchronous drive with zero coroutine machinery: (1) commit sweep -
+      // completions that fired between dispatches are delivered as explicit
+      // completion events in ascending source order before the trigger runs;
+      // (2) the trigger dispatches, its actions may arm sources, hand them to
+      // workers, and mark them required; (3) the drain loop blocks on the
+      // scheduler's semaphore and delivers each required completion (lowest
+      // fired index first) until none remain, so nothing observable escapes
+      // this call and delivery happens only on this (the dispatching)
+      // thread. Required bits left by a previous aborted dispatch are
+      // cleared first. The fast path (no fired and no required sources) costs
+      // one sweep scan plus one mask check over the inline dispatch.
+      scheduler_.reset_dispatch_state();
+      using completion_event_t = typename scheduler_type::completion_event;
+      for (std::size_t index = scheduler_.sweep_next_fired(); index != scheduler_type::npos;
+           index = scheduler_.sweep_next_fired()) {
+        (void)state_machine_.process_event(completion_event_t{index});
+      }
+      bool accepted = state_machine_.process_event(event);
+      while (scheduler_.has_required()) {
+        const std::size_t index = scheduler_.consume_next_fired_required();
+        if (index == scheduler_type::npos) {
+          scheduler_.wait_any();
+          continue;
+        }
+        accepted = state_machine_.process_event(completion_event_t{index}) && accepted;
+      }
+      return accepted;
     } else {
       return state_machine_.process_event(event);
     }
@@ -669,31 +700,6 @@ class co_sm {
   // sources the machine marked required are awaited (suspending this coroutine)
   // and re-entered as completion events until none remain. The caller's drive
   // loop in process_event resumes the coroutine on the dispatching thread only.
-  // The trigger event is taken by reference: the coroutine is always driven
-  // to completion inside the enclosing process_event call, so the caller's
-  // event outlives the frame and non-copyable event types stay supported.
-  template <class TEvent>
-  static bool_task process_event_external_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self,
-                                               const TEvent& event)
-    requires policy::external_completion_scheduler_contract<scheduler_type>
-  {
-    (void)allocator;
-    using completion_event_t = typename scheduler_type::completion_event;
-
-    for (std::size_t index = self.scheduler_.sweep_next_fired(); index != scheduler_type::npos;
-         index = self.scheduler_.sweep_next_fired()) {
-      (void)self.state_machine_.process_event(completion_event_t{index});
-    }
-
-    bool accepted = self.state_machine_.process_event(event);
-
-    while (self.scheduler_.has_required()) {
-      const std::size_t index = co_await self.scheduler_.next_fired_required();
-      accepted = self.state_machine_.process_event(completion_event_t{index}) && accepted;
-    }
-
-    co_return accepted;
-  }  // GCOVR_EXCL_LINE
 
   template <class TEvent>
   struct process_event_awaitable {
@@ -738,6 +744,10 @@ class co_sm {
   state_machine_type state_machine_{};
   scheduler_type scheduler_{};
   allocator_type allocator_{};
+  // Depth of synchronous external-completion dispatches on this machine;
+  // nested calls (actions re-entering process_event) skip reset/sweep/drain
+  // so the outermost dispatch's run-to-completion drain stays intact.
+  std::size_t external_dispatch_depth_ = 0;
 };
 
 }  // namespace utility

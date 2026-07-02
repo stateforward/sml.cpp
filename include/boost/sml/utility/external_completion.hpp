@@ -33,7 +33,6 @@
 #if BOOST_SML_UTILITY_EXTERNAL_COMPLETION_ENABLED
 #include <array>
 #include <atomic>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <semaphore>
@@ -87,7 +86,7 @@ class completion_source {
   std::counting_semaphore<>* wakeup_ = nullptr;
 };
 
-// Scheduler policy that lets a co_sm dispatch suspend on completions fired by
+// Scheduler policy that lets a co_sm dispatch block on completions fired by
 // other threads while still returning only when the whole dispatch is done:
 //
 //   1. commit sweep — completions that fired between dispatches are delivered
@@ -95,18 +94,17 @@ class completion_source {
 //      the trigger event runs;
 //   2. the trigger event dispatches; its actions may arm sources, hand them to
 //      workers, and mark some of them required for this dispatch;
-//   3. required-wait drain — the dispatch coroutine awaits each required
-//      source (lowest fired index first) and re-enters it as a
-//      `utility::completion` event; the top-level process_event parks on the
-//      semaphore and resumes the coroutine on the calling thread until the
-//      root task is ready.
+//   3. required-wait drain — the dispatching thread consumes each required
+//      source (lowest fired index first) as a `utility::completion` event,
+//      blocking on the semaphore between fires, until none remain.
 //
-// All coroutine machinery (park, resume, await bookkeeping) is single-consumer
-// on the dispatching thread; producers interact only through
-// completion_source::fire. The run-to-completion guarantees are honored because
-// nothing escapes the top-level dispatch: required completions are drained
-// before it returns, and unrequired (background) fires persist only as passive
-// flags swept by the next dispatch.
+// All bookkeeping is single-consumer on the dispatching thread; producers
+// interact only through completion_source::fire. The run-to-completion
+// guarantees are honored because nothing escapes the top-level dispatch:
+// required completions are drained before it returns, and unrequired
+// (background) fires persist only as passive flags swept by the next dispatch.
+// The drive is a plain loop, so the no-completion fast path adds only one
+// sweep scan and one mask check over an inline dispatch.
 //
 // Contract: a source marked required must have been handed to a producer that
 // will eventually fire it, or the drain loop cannot finish. Destroying the
@@ -146,13 +144,10 @@ class external_completion_scheduler {
   completion_source& source(const std::size_t index) noexcept { return sources_[index]; }
 
   // Clears bookkeeping an aborted dispatch may have left behind (for example
-  // a state-machine action that threw after require()): required bits and a
-  // parked handle are meaningless outside the dispatch that created them, and
-  // stale required bits would otherwise block the next drain forever.
-  void reset_dispatch_state() noexcept {
-    required_ = 0;
-    parked_ = nullptr;
-  }
+  // a state-machine action that threw after require()): required bits are
+  // meaningless outside the dispatch that created them, and stale bits would
+  // otherwise block the next drain forever.
+  void reset_dispatch_state() noexcept { required_ = 0; }
 
   // Marks a source as blocking the current dispatch. Consumer thread only
   // (machine actions via an injected scheduler pointer).
@@ -172,34 +167,24 @@ class external_completion_scheduler {
     return npos;
   }
 
-  // Awaitable used by the dispatch coroutine: ready when any required source
-  // has fired; resuming consumes the lowest fired required index.
-  auto next_fired_required() noexcept {
-    struct awaitable {
-      external_completion_scheduler& self;
-      bool await_ready() const noexcept { return self.lowest_required_fired() != npos; }
-      void await_suspend(std::coroutine_handle<> handle) noexcept { self.parked_ = handle; }
-      std::size_t await_resume() noexcept { return self.consume_lowest_required_fired(); }
-    };
-    return awaitable{*this};
+  // Lowest fired source marked required, consumed (required bit cleared,
+  // source reset) and returned for delivery as a completion event; npos when
+  // none has fired yet. Consumer thread only.
+  std::size_t consume_next_fired_required() noexcept {
+    const std::size_t index = lowest_required_fired();
+    if (index == npos) {
+      return npos;
+    }
+    required_ &= ~bit(index);
+    sources_[index].reset();
+    return index;
   }
 
   // Blocks the dispatching thread until some source fires. Permits accumulate,
-  // so a fire that lands before the wait is never lost.
+  // so a fire that lands before the wait is never lost; a permit consumed for
+  // a background (unrequired) fire simply re-checks and waits again, leaving
+  // that fire set for a later sweep.
   void wait_any() noexcept { wakeup_.acquire(); }
-
-  // Resumes the parked dispatch coroutine iff its awaited condition holds.
-  // A permit consumed for a background (unrequired) fire leaves the coroutine
-  // parked; that fire stays set for a later sweep.
-  bool try_resume_parked() noexcept {
-    if (parked_ == nullptr || lowest_required_fired() == npos) {
-      return false;
-    }
-    const std::coroutine_handle<> handle = parked_;
-    parked_ = nullptr;
-    handle.resume();
-    return true;
-  }
 
  private:
   static constexpr std::uint64_t bit(const std::size_t index) noexcept { return std::uint64_t{1} << index; }
@@ -213,17 +198,9 @@ class external_completion_scheduler {
     return npos;
   }
 
-  std::size_t consume_lowest_required_fired() noexcept {
-    const std::size_t index = lowest_required_fired();
-    required_ &= ~bit(index);
-    sources_[index].reset();
-    return index;
-  }
-
   std::array<completion_source, SourceCount> sources_{};
   std::counting_semaphore<> wakeup_{0};
   std::uint64_t required_ = 0;
-  std::coroutine_handle<> parked_ = nullptr;
 };
 
 }  // namespace policy

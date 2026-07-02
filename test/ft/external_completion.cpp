@@ -288,6 +288,71 @@ test external_completion_aborted_dispatch_does_not_poison_next = [] {
 };
 #endif
 
+struct e_require_then_nested_probe {};
+
+test external_completion_nested_dispatch_preserves_outer_drain = [] {
+  struct nested_context {
+    scheduler_t* scheduler = nullptr;
+    pool_t* pool = nullptr;
+    std::array<std::size_t, 16> log{};
+    std::size_t log_count = 0;
+    void* self = nullptr;
+    bool (*nested_probe)(void*) = nullptr;
+  };
+
+  struct nested_machine {
+    auto operator()() const {
+      using namespace sml;
+      const auto a_require_then_nested_probe = [](const e_require_then_nested_probe&, nested_context& context) {
+        context.scheduler->source(0).arm();
+        (void)context.pool->try_submit_with_completion(
+            []() noexcept {
+              const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+              while (std::chrono::steady_clock::now() < until) {
+              }
+            },
+            &context.scheduler->source(0), &utility::policy::completion_source::fire);
+        context.scheduler->require(0);
+        // Synchronous re-entry: the nested dispatch must not clear the
+        // required bit the outer drain is about to wait on.
+        (void)context.nested_probe(context.self);
+      };
+      const auto a_probe = [](const e_probe&, nested_context& context) { context.log[context.log_count++] = k_probe_marker; };
+      const auto a_record = [](const utility::completion& ev, nested_context& context) {
+        context.log[context.log_count++] = ev.source_index;
+      };
+      // clang-format off
+      return make_transition_table(
+        *"ready"_s + event<e_require_then_nested_probe> / a_require_then_nested_probe
+        , "ready"_s + event<e_probe> / a_probe
+        , "ready"_s + event<utility::completion> / a_record
+      );
+      // clang-format on
+    }
+  };
+
+  using nested_co_sm =
+      utility::co_sm<nested_machine, utility::policy::coroutine_scheduler<scheduler_t>,
+                     utility::policy::coroutine_allocator<utility::policy::pooled_coroutine_allocator<>>, nested_context>;
+  pool_t pool{};
+  nested_context context{};
+  nested_co_sm machine{context};
+  context.scheduler = &machine.scheduler();
+  context.pool = &pool;
+  context.self = &machine;
+  context.nested_probe = [](void* self) { return static_cast<nested_co_sm*>(self)->process_event(e_probe{}); };
+
+  expect(machine.process_event(e_require_then_nested_probe{}));
+
+  // The nested probe ran inside the outer dispatch, and the outer drain still
+  // delivered the required completion before returning.
+  expect(2u == context.log_count);
+  expect(k_probe_marker == context.log[0]);
+  expect(0u == context.log[1]);
+  expect(!machine.scheduler().has_required());
+  expect(machine.scheduler().source(0).is_idle());
+};
+
 test external_completion_sources_reusable_across_dispatches = [] {
   fixture f{};
 
