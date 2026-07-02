@@ -160,7 +160,7 @@ class external_completion_scheduler {
   std::size_t sweep_next_fired() noexcept {
     for (std::size_t index = 0; index < SourceCount; ++index) {
       if ((required_ & bit(index)) == 0u && sources_[index].is_fired()) {
-        sources_[index].reset();
+        consume_fired(index);
         return index;
       }
     }
@@ -176,7 +176,7 @@ class external_completion_scheduler {
       return npos;
     }
     required_ &= ~bit(index);
-    sources_[index].reset();
+    consume_fired(index);
     return index;
   }
 
@@ -188,6 +188,17 @@ class external_completion_scheduler {
 
  private:
   static constexpr std::uint64_t bit(const std::size_t index) noexcept { return std::uint64_t{1} << index; }
+
+  // Consuming a fired flag also burns the wakeup permit its fire released
+  // (non-blocking: the permit may already have been spent by a blocking wait
+  // in the drain loop). Fired flags are the ground truth - the drain only
+  // blocks after finding no consumable flag - so permit accounting cannot
+  // cause a hang; without this burn, background fires swept between
+  // dispatches would leak permits for the scheduler's lifetime.
+  void consume_fired(const std::size_t index) noexcept {
+    sources_[index].reset();
+    (void)wakeup_.try_acquire();
+  }
 
   std::size_t lowest_required_fired() const noexcept {
     for (std::size_t index = 0; index < SourceCount; ++index) {

@@ -353,6 +353,29 @@ test external_completion_nested_dispatch_preserves_outer_drain = [] {
   expect(machine.scheduler().source(0).is_idle());
 };
 
+test external_completion_background_fires_do_not_leak_permits = [] {
+  fixture f{};
+
+  // Each background fire releases one wakeup permit; the sweep that consumes
+  // its flag must burn that permit too, or permits accumulate for the
+  // scheduler's lifetime. After many cycles a worker-fired required dispatch
+  // must still drain correctly (a leak would surface as the drain loop
+  // spinning on stale permits or, at the extreme, fire() terminating on
+  // semaphore overflow).
+  for (std::size_t cycle = 0; cycle < 10000; ++cycle) {
+    f.context.scheduler->source(3).arm();
+    utility::policy::completion_source::fire(&f.context.scheduler->source(3));
+    expect(f.machine_instance.process_event(e_probe{}));
+    f.context.log_count = 0;
+  }
+
+  f.context.worker_delay = true;
+  expect(f.machine_instance.process_event(e_require_via_worker{2}));
+  expect(2u == f.context.log_count);
+  expect(0u == f.context.log[0]);
+  expect(1u == f.context.log[1]);
+};
+
 test external_completion_sources_reusable_across_dispatches = [] {
   fixture f{};
 
