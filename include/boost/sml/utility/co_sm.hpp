@@ -303,6 +303,24 @@ concept has_try_run_immediate = requires(TScheduler scheduler) {
   } -> std::same_as<bool>;
 };
 
+// Structural contract for schedulers that deliver externally fired completions
+// (see utility/external_completion.hpp). Detected duck-typed so this header
+// stays independent of the opt-in module. Such schedulers still honor the
+// strict ordering contract: required completions are drained before the
+// top-level dispatch returns, and delivery order is deterministic.
+template <class TScheduler>
+concept external_completion_scheduler_contract = requires {
+  { TScheduler::external_completion } -> std::convertible_to<bool>;
+  { TScheduler::npos } -> std::convertible_to<std::size_t>;
+  typename TScheduler::completion_event;
+} && static_cast<bool>(TScheduler::external_completion) && requires(TScheduler scheduler) {
+  { scheduler.has_required() } -> std::convertible_to<bool>;
+  { scheduler.sweep_next_fired() } -> std::same_as<std::size_t>;
+  { scheduler.consume_next_fired_required() } -> std::same_as<std::size_t>;
+  scheduler.wait_any();
+  scheduler.reset_dispatch_state();
+};
+
 template <class TAllocatorPolicy>
 concept valid_coroutine_allocator_policy = requires { typename TAllocatorPolicy::allocator_type; };
 
@@ -578,7 +596,54 @@ class co_sm {
 
   template <class TEvent>
   bool process_event(const TEvent& event) {
-    return state_machine_.process_event(event);
+    if constexpr (policy::external_completion_scheduler_contract<scheduler_type>) {
+      // Only the outermost dispatch owns the completion machinery: a nested
+      // synchronous process_event from a transition action dispatches its
+      // trigger plainly, and any sources it marks required are drained by the
+      // enclosing dispatch before that dispatch returns. Resetting or
+      // draining from the nested call would clear required bits the outer
+      // drain still needs.
+      if (external_dispatch_depth_ > 0) {
+        return state_machine_.process_event(event);
+      }
+
+      struct dispatch_depth_scope {
+        std::size_t& depth;
+        ~dispatch_depth_scope() noexcept { --depth; }
+      };
+      ++external_dispatch_depth_;
+      dispatch_depth_scope depth_scope{external_dispatch_depth_};
+
+      // Synchronous drive with zero coroutine machinery: (1) commit sweep -
+      // completions that fired between dispatches are delivered as explicit
+      // completion events in ascending source order before the trigger runs;
+      // (2) the trigger dispatches, its actions may arm sources, hand them to
+      // workers, and mark them required; (3) the drain loop blocks on the
+      // scheduler's semaphore and delivers each required completion (lowest
+      // fired index first) until none remain, so nothing observable escapes
+      // this call and delivery happens only on this (the dispatching)
+      // thread. Required bits left by a previous aborted dispatch are
+      // cleared first. The fast path (no fired and no required sources) costs
+      // one sweep scan plus one mask check over the inline dispatch.
+      scheduler_.reset_dispatch_state();
+      using completion_event_t = typename scheduler_type::completion_event;
+      for (std::size_t index = scheduler_.sweep_next_fired(); index != scheduler_type::npos;
+           index = scheduler_.sweep_next_fired()) {
+        (void)state_machine_.process_event(completion_event_t{index});
+      }
+      bool accepted = state_machine_.process_event(event);
+      while (scheduler_.has_required()) {
+        const std::size_t index = scheduler_.consume_next_fired_required();
+        if (index == scheduler_type::npos) {
+          scheduler_.wait_any();
+          continue;
+        }
+        accepted = state_machine_.process_event(completion_event_t{index}) && accepted;
+      }
+      return accepted;
+    } else {
+      return state_machine_.process_event(event);
+    }
   }
 
   template <class TEvent>
@@ -586,19 +651,21 @@ class co_sm {
     using event_t = typename std::decay<TEvent>::type;
     event_t event_copy(static_cast<TEvent&&>(event));
 
-    if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
+    if constexpr (policy::external_completion_scheduler_contract<scheduler_type>) {
+      return bool_task::from_value(process_event(event_copy));
+    } else if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
       return bool_task::from_value(state_machine_.process_event(event_copy));
-    }
-
-    if constexpr (policy::has_try_run_immediate<scheduler_type>) {
-      bool accepted = false;
-      if (scheduler_.try_run_immediate(
-              [this, &event_copy, &accepted]() { accepted = state_machine_.process_event(event_copy); })) {
-        return bool_task::from_value(accepted);
+    } else {
+      if constexpr (policy::has_try_run_immediate<scheduler_type>) {
+        bool accepted = false;
+        if (scheduler_.try_run_immediate(
+                [this, &event_copy, &accepted]() { accepted = state_machine_.process_event(event_copy); })) {
+          return bool_task::from_value(accepted);
+        }
       }
-    }
 
-    return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
+      return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
+    }
   }
 
   template <class TState>
@@ -626,6 +693,13 @@ class co_sm {
     (void)allocator;
     co_return co_await process_event_awaitable<typename std::decay<TEvent>::type>{self, static_cast<TEvent&&>(event)};
   }  // GCOVR_EXCL_LINE
+
+  // External-completion dispatch: (1) commit sweep — completions fired between
+  // dispatches are delivered as explicit completion events in ascending source
+  // order before the trigger runs; (2) the trigger event dispatches; (3) any
+  // sources the machine marked required are awaited (suspending this coroutine)
+  // and re-entered as completion events until none remain. The caller's drive
+  // loop in process_event resumes the coroutine on the dispatching thread only.
 
   template <class TEvent>
   struct process_event_awaitable {
@@ -670,6 +744,10 @@ class co_sm {
   state_machine_type state_machine_{};
   scheduler_type scheduler_{};
   allocator_type allocator_{};
+  // Depth of synchronous external-completion dispatches on this machine;
+  // nested calls (actions re-entering process_event) skip reset/sweep/drain
+  // so the outermost dispatch's run-to-completion drain stays intact.
+  std::size_t external_dispatch_depth_ = 0;
 };
 
 }  // namespace utility
