@@ -211,8 +211,15 @@ class pooled_coroutine_allocator {
   static_assert(SlotCount > 0, "pooled_coroutine_allocator slot count must be non-zero");
 
   pooled_coroutine_allocator() noexcept { reset_freelist(); }
+  pooled_coroutine_allocator(const pooled_coroutine_allocator&) noexcept { reset_freelist(); }
+  pooled_coroutine_allocator& operator=(const pooled_coroutine_allocator&) noexcept {
+    lock_scope lock{lock_};
+    reset_freelist();
+    return *this;
+  }
 
   void* allocate(const std::size_t size, const std::size_t alignment) {
+    lock_scope lock{lock_};
     if (size <= SlotSize && alignment <= alignof(pool_slot) && free_head_ != invalid_index) {
       const std::size_t slot_index = free_head_;
       free_head_ = next_free_[slot_index];
@@ -227,6 +234,7 @@ class pooled_coroutine_allocator {
       return;
     }
 
+    lock_scope lock{lock_};
     if (size <= SlotSize && alignment <= alignof(pool_slot) && is_pool_pointer(ptr)) {
       const std::size_t slot_index = slot_index_for(ptr);
       next_free_[slot_index] = free_head_;
@@ -243,6 +251,16 @@ class pooled_coroutine_allocator {
 
   struct pool_slot {
     alignas(std::max_align_t) std::array<unsigned char, SlotSize> storage{};
+  };
+
+  struct lock_scope {
+    explicit lock_scope(std::atomic_flag& flag) noexcept : flag(flag) {
+      while (flag.test_and_set(std::memory_order_acquire)) {
+      }
+    }
+    ~lock_scope() noexcept { flag.clear(std::memory_order_release); }
+
+    std::atomic_flag& flag;
   };
 
   bool is_pool_pointer(void* ptr) const noexcept {
@@ -275,6 +293,7 @@ class pooled_coroutine_allocator {
   std::array<pool_slot, SlotCount> slots_{};
   std::array<std::size_t, SlotCount> next_free_{};
   std::size_t free_head_ = 0;
+  mutable std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
 };
 
 template <class TAllocator>
@@ -450,7 +469,8 @@ class bool_task {
 
     static constexpr unsigned running = 0u;
     static constexpr unsigned awaiting = 1u;
-    static constexpr unsigned completed = 2u;
+    static constexpr unsigned completing = 2u;
+    static constexpr unsigned completed = 3u;
 
     promise_type() = default;
 
@@ -476,11 +496,15 @@ class bool_task {
         bool await_ready() const noexcept { return false; }
         std::coroutine_handle<> await_suspend(handle_type h) const noexcept {
           auto& promise = h.promise();
-          const unsigned previous = promise.state.exchange(completed, std::memory_order_acq_rel);
-          if (promise.completion != nullptr) {
-            promise.completion(promise.completion_ctx);
+          const unsigned previous = promise.state.exchange(completing, std::memory_order_acq_rel);
+          auto continuation = previous == awaiting ? promise.continuation : std::noop_coroutine();
+          auto completion = promise.completion;
+          void* completion_ctx = promise.completion_ctx;
+          promise.state.store(completed, std::memory_order_release);
+          if (completion != nullptr) {
+            completion(completion_ctx);
           }
-          return previous == awaiting ? promise.continuation : std::noop_coroutine();
+          return continuation;
         }
         void await_resume() const noexcept {}
       };
@@ -552,6 +576,11 @@ class bool_task {
     const unsigned previous = promise.state.exchange(promise_type::awaiting, std::memory_order_acq_rel);
     if (previous == promise_type::completed) {
       promise.state.store(promise_type::completed, std::memory_order_release);
+      return awaiting;
+    }
+    if (previous == promise_type::completing) {
+      while (!promise.is_complete()) {
+      }
       return awaiting;
     }
     if (previous == promise_type::awaiting) {
@@ -813,16 +842,18 @@ class co_sm {
           }
           ~active_owner_scope() noexcept { active_async_dispatch_owner_ = previous; }
         };
-        active_owner_scope owner{&self};
+        {
+          active_owner_scope owner{&self};
 #if !BOOST_SML_DISABLE_EXCEPTIONS
-        try {
-          accepted = self.state_machine_.process_event(event_value);
-        } catch (...) {
-          exception = std::current_exception();
-        }
+          try {
+            accepted = self.state_machine_.process_event(event_value);
+          } catch (...) {
+            exception = std::current_exception();
+          }
 #else
-        accepted = self.state_machine_.process_event(event_value);
+          accepted = self.state_machine_.process_event(event_value);
 #endif
+        }
         handle.resume();
       });
     }
