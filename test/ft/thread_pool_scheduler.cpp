@@ -8,13 +8,13 @@
 #include <atomic>
 #include <boost/sml/utility/thread_pool_scheduler.hpp>
 #include <cstddef>
+#include <thread>
 #include <utility>
 
 #if BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
 namespace policy = boost::sml::utility::policy;
 
 using pool_t = policy::thread_pool_scheduler<8>;
-using pool_ref_t = policy::thread_pool_scheduler_ref<pool_t>;
 
 // A non-noexcept callable: the scheduled wait/schedule paths must stay
 // unconditionally noexcept (their worker thunk cannot propagate), while the
@@ -22,30 +22,31 @@ using pool_ref_t = policy::thread_pool_scheduler_ref<pool_t>;
 struct may_throw_callable {
   void operator()() const {}
 };
-static_assert(noexcept(std::declval<pool_ref_t&>().run_or_schedule_and_wait(may_throw_callable{})),
+static_assert(noexcept(std::declval<pool_t&>().run_or_schedule_and_wait(may_throw_callable{})),
               "run_or_schedule_and_wait must be unconditionally noexcept");
-static_assert(noexcept(std::declval<pool_ref_t&>().schedule(may_throw_callable{})),
-              "schedule must be unconditionally noexcept");
+static_assert(noexcept(std::declval<pool_t&>().schedule(may_throw_callable{})), "schedule must be unconditionally noexcept");
 static_assert(!noexcept(std::declval<pool_t&>().try_run_immediate(may_throw_callable{})),
               "try_run_immediate stays conditionally noexcept (inline path propagates)");
 
 test thread_pool_scheduler_runs_task_inline_when_idle = [] {
-  pool_t pool{};
-  pool_ref_t scheduler{pool};
+  pool_t scheduler{};
   int calls = 0;
-  const bool ran = scheduler.run_or_schedule_and_wait([&calls] { ++calls; });
+  const auto caller = std::this_thread::get_id();
+  std::thread::id ran_on{};
+  const bool ran = scheduler.run_or_schedule_and_wait([&] {
+    ++calls;
+    ran_on = std::this_thread::get_id();
+  });
   expect(ran);
   expect(1 == calls);
   // An idle pool runs the work on the calling thread rather than a worker.
-  expect(1u == scheduler.immediate_run_count());
-  expect(0u == scheduler.worker_run_count());
+  expect(caller == ran_on);
 };
 
 test thread_pool_scheduler_fork_join_runs_every_lane = [] {
-  pool_t pool{};
-  pool_ref_t scheduler{pool};
+  pool_t scheduler{};
   std::atomic<int> calls{0};
-  pool_ref_t::join_group group{};
+  pool_t::join_group group{};
   for (std::size_t lane = 0; lane < 8u; ++lane) {
     scheduler.try_submit(group, [&calls] { calls.fetch_add(1, std::memory_order_relaxed); });
   }
@@ -58,13 +59,12 @@ test thread_pool_scheduler_fork_join_runs_every_lane = [] {
 // must not make a later all-success round report failure. (try_submit from inside
 // a worker is rejected, since a worker cannot fork into its own pool.)
 test thread_pool_scheduler_reused_join_group_clears_prior_rejection = [] {
-  pool_t pool{};
-  pool_ref_t scheduler{pool};
-  pool_ref_t::join_group group{};
+  pool_t scheduler{};
+  pool_t::join_group group{};
 
   // Round 1: drive a worker that tries to submit into `group` -> rejected.
   std::atomic<bool> rejected_on_worker{false};
-  pool_ref_t::join_group driver{};
+  pool_t::join_group driver{};
   scheduler.try_submit(driver,
                        [&] { rejected_on_worker.store(!scheduler.try_submit(group, [] {}), std::memory_order_release); });
   driver.wait();
@@ -85,14 +85,13 @@ test thread_pool_scheduler_reused_join_group_clears_prior_rejection = [] {
 // destroy-during-release semaphore could strand a wakeup. The lifetime-safe
 // spin-join must complete every round without hanging. (Reproduced reliably with
 // thousands of rounds; kept here as a standing guard.)
-test thread_pool_scheduler_ref_fork_join_survives_rapid_repeated_rounds = [] {
+test thread_pool_scheduler_fork_join_survives_rapid_repeated_rounds = [] {
   constexpr std::size_t lanes = 8u;
   constexpr int rounds = 20000;
-  pool_t pool{};
-  pool_ref_t scheduler{pool};
+  pool_t scheduler{};
   std::atomic<long> calls{0};
   for (int round = 0; round < rounds; ++round) {
-    pool_ref_t::join_group group{};
+    pool_t::join_group group{};
     for (std::size_t lane = 0; lane < lanes; ++lane) {
       scheduler.try_submit(group, [&calls] { calls.fetch_add(1, std::memory_order_relaxed); });
     }

@@ -250,13 +250,13 @@ test co_sm_deferred_scheduler_not_done_then_done = [] {
   expect(sm.is(s1));
 };
 
+#if !BOOST_SML_DISABLE_EXCEPTIONS
 utility::bool_task throwing_bool_task() {
   throw std::runtime_error("test");
   co_return true;
 }
 
 test bool_task_exception_rethrow = [] {
-#if !BOOST_SML_DISABLE_EXCEPTIONS
   auto task = throwing_bool_task();
   bool got_runtime_error = false;
   try {
@@ -265,8 +265,8 @@ test bool_task_exception_rethrow = [] {
     got_runtime_error = true;
   }
   expect(got_runtime_error);
-#endif
 };
+#endif
 
 test bool_task_await_suspend_with_non_empty_handle = [] {
   using sm_t = utility::co_sm<c, utility::policy::coroutine_scheduler<deferred_scheduler>,
@@ -275,7 +275,7 @@ test bool_task_await_suspend_with_non_empty_handle = [] {
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
   const auto resumed_handle = task.await_suspend(std::noop_coroutine());
-  expect(resumed_handle != std::noop_coroutine());
+  expect(resumed_handle == std::noop_coroutine());
   sm.scheduler().run_pending();
   expect(task.result());
   expect(sm.is(s1));
