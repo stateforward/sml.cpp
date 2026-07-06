@@ -29,7 +29,7 @@ This fork addresses critical bugs, adds utilities for high-throughput and async 
 
 - **Completion transitions** (`completion<T>`) -- post-event transitions with origin event propagation
 - **Coroutine state machines** (`co_sm`) -- C++20 coroutine-driven SM with configurable scheduler and allocator policies
-- **`thread_pool_scheduler`** -- opt-in C++20 multi-consumer work pool with a lifetime-safe, deadlock-free fork/join latch for action-level inter-op parallelism (warm workers, fixed task ring, no allocation on dispatch)
+- **`thread_pool_scheduler`** -- opt-in C++20 multi-consumer work pool for nonblocking coroutine dispatch plus explicit blocking fork/join APIs (warm workers, fixed task ring, no allocation on dispatch)
 - **`sm_pool`** -- pool-based container for managing thousands of SM instances with indexed and batch dispatch
 - **`dispatch_table`** -- compile-time dispatch table for ID-based event routing at zero runtime overhead
 
@@ -126,16 +126,19 @@ cl /std:c++14 /Ox /W3 tcp_release.cpp
 
 ## Utilities
 
+<!-- utility APIs from include/boost/sml/utility/co_sm.hpp and include/boost/sml/utility/thread_pool_scheduler.hpp -->
+
 ### co_sm (C++20)
 
 Coroutine-driven state machine wrapper with configurable scheduling and allocation policies. Requires C++20 with coroutine support.
 
 ```cpp
 #include <stateforward/sml/utility/co_sm.hpp>
+#include <stateforward/sml/utility/thread_pool_scheduler.hpp>
 
 namespace utility = sml::utility;
 
-// Default: inline scheduler, pooled coroutine allocator
+// Default: FIFO scheduler, pooled coroutine allocator
 utility::co_sm<my_fsm> sm{};
 
 // Synchronous dispatch (same as regular sm)
@@ -143,16 +146,31 @@ sm.process_event(my_event{});
 
 // Asynchronous dispatch via coroutine
 auto task = sm.process_event_async(my_event{});
-bool accepted = task.result();
+
+// result() is nonblocking: call it only after completion, or co_await the task.
+if (task.await_ready()) {
+  bool accepted = task.result();
+}
+
+// Thread-pool dispatch starts work on a worker and lets the caller await later.
+using pool_scheduler = utility::policy::thread_pool_scheduler<4>;
+utility::co_sm<my_fsm, utility::policy::coroutine_scheduler<pool_scheduler>> pooled{};
+auto pooled_task = pooled.process_event_async(my_event{});
+// ...do local work...
+while (!pooled_task.await_ready()) {}
+bool pooled_accepted = pooled_task.result();
 ```
 
 **Scheduler policies:**
 
 | Policy | Description |
 |--------|-------------|
-| `inline_scheduler` | Runs tasks immediately (default) |
-| `fifo_scheduler<Capacity, InlineBytes>` | FIFO queue with bounded inline storage |
+| `inline_scheduler` | Runs tasks immediately |
+| `fifo_scheduler<Capacity, InlineBytes>` | FIFO queue with bounded inline storage (default) |
+| `thread_pool_scheduler<Workers, Capacity, InlineBytes>` | Starts `process_event_async` on worker threads and returns a task to await later; same-actor overlap is rejected |
 | `coroutine_scheduler<TScheduler>` | Wraps any scheduler for the coroutine path |
+
+`thread_pool_scheduler::schedule(fn)` is nonblocking. Use `run_or_schedule_and_wait(fn)` or `thread_pool_scheduler::join_group` at RTC call sites that need an immediate join. Destroying an incomplete `bool_task` is a hard contract violation and terminates; keep the task alive until it is ready or awaited.
 
 **Allocator policies:**
 

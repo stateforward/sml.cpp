@@ -13,6 +13,13 @@ add_example(simple_sc benchmark_simple_sc sc.cpp)
 
 if (NOT IS_MSVC_2015)
   add_example(simple_co_sm benchmark_simple_co_sm co_sm.cpp)
+  add_example(simple_thread_pool_co_sm benchmark_simple_thread_pool_co_sm thread_pool_co_sm.cpp)
+  target_link_libraries(simple_thread_pool_co_sm PRIVATE -lpthread)
+  if (IS_COMPILER_OPTION_MSVC_LIKE)
+    target_compile_options(simple_thread_pool_co_sm PRIVATE /UCHECK_COMPILE_TIME)
+  else()
+    target_compile_options(simple_thread_pool_co_sm PRIVATE -UCHECK_COMPILE_TIME)
+  endif()
 
   if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sml_player_sm.hpp")
     add_example(simple_sml benchmark_simple_sml sml.cpp)

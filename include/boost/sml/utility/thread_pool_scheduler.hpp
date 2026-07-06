@@ -101,6 +101,60 @@ class thread_pool_scheduler {
   thread_pool_scheduler(thread_pool_scheduler&&) = delete;
   thread_pool_scheduler& operator=(thread_pool_scheduler&&) = delete;
 
+  class join_group {
+   public:
+    join_group() = default;
+    ~join_group() = default;
+
+    join_group(const join_group&) = delete;
+    join_group& operator=(const join_group&) = delete;
+    join_group(join_group&&) = delete;
+    join_group& operator=(join_group&&) = delete;
+
+    bool wait() noexcept {
+      // Spin-join on pending_ rather than blocking on a per-group semaphore.
+      // The group is caller-owned and typically stack-reused across fork/joins,
+      // so a notify-based wakeup is unsafe: the waiter could observe completion,
+      // return, and destroy the group before the last completer finishes its
+      // release()/notify, faulting on freed semaphore state. With a plain spin,
+      // a completer's final touch of the group is its pending_ decrement, and
+      // wait() returns only after observing pending_ == 0 (all decrements done),
+      // so nothing accesses the group after the caller may destroy it. The wait
+      // is a bounded RTC fork/join over already-submitted lanes, so the producer
+      // core would otherwise be idle; spinning gives the lowest join latency.
+      while (pending_.load(std::memory_order_acquire) != 0u) {
+        cpu_relax();
+      }
+      // pending_ == 0 means every completer is done touching the group, so the
+      // owning thread can now read and clear accepted_ with no contention. The
+      // clear lets a stack-reused join_group start the next round clean: without
+      // it, a single rejected lane would make wait() return false on every later
+      // round even when all lanes succeed.
+      const bool accepted = accepted_.load(std::memory_order_acquire);
+      accepted_.store(true, std::memory_order_release);
+      return accepted;
+    }
+
+   private:
+    friend class thread_pool_scheduler;
+
+    void start_one() noexcept { pending_.fetch_add(1u, std::memory_order_acq_rel); }
+
+    void reject_one() noexcept {
+      accepted_.store(false, std::memory_order_release);
+      complete_one();
+    }
+
+    void reject() noexcept { accepted_.store(false, std::memory_order_release); }
+
+    void complete_one() noexcept { pending_.fetch_sub(1u, std::memory_order_acq_rel); }
+
+    static void complete_one(void* ctx) noexcept { static_cast<join_group*>(ctx)->complete_one(); }
+
+    std::atomic<std::uint32_t> pending_ = 0u;
+    std::atomic<bool> accepted_ = true;
+  };
+
   template <class fn>
   bool try_run_immediate(fn&& fn_in) noexcept(noexcept(std::forward<fn>(fn_in)())) {
     if (queued_or_running_.load(std::memory_order_acquire) != 0u) {
@@ -122,7 +176,6 @@ class thread_pool_scheduler {
     }
 
     std::forward<fn>(fn_in)();
-    immediate_run_count_.fetch_add(1u, std::memory_order_relaxed);
     return true;
   }
 
@@ -131,14 +184,35 @@ class thread_pool_scheduler {
     return try_submit_with_completion(std::forward<fn>(fn_in), nullptr, nullptr);
   }
 
-  // Detached hard-contract wrapper for call sites that have already proven
-  // scheduler lifetime and queue capacity. Actor-facing RTC paths must use
-  // thread_pool_scheduler_ref::schedule or run_or_schedule_and_wait.
   template <class fn>
-  void submit(fn&& fn_in) noexcept {
+  bool try_submit(join_group& group, fn&& fn_in) noexcept {
+    if (is_current_thread_worker()) {
+      group.reject();
+      return false;
+    }
+
+    group.start_one();
+    const bool submitted = try_submit_with_completion(std::forward<fn>(fn_in), &group, join_group::complete_one);
+    if (!submitted) {
+      group.reject_one();
+      return false;
+    }
+    return true;
+  }
+
+  template <class fn>
+  void schedule(fn&& fn_in) noexcept {
     if (!try_submit(std::forward<fn>(fn_in))) {
       std::terminate();
     }
+  }
+
+  // Detached hard-contract wrapper for call sites that have already proven
+  // scheduler lifetime and queue capacity. RTC call sites use
+  // run_or_schedule_and_wait or thread_pool_scheduler::join_group.
+  template <class fn>
+  void submit(fn&& fn_in) noexcept {
+    schedule(std::forward<fn>(fn_in));
   }
 
   // Unconditionally noexcept (like fifo_scheduler::schedule): when this falls to
@@ -170,12 +244,6 @@ class thread_pool_scheduler {
     return true;
   }
 
-  std::uint64_t immediate_run_count() const noexcept { return immediate_run_count_.load(std::memory_order_relaxed); }
-
-  std::uint64_t scheduled_run_count() const noexcept { return scheduled_run_count_.load(std::memory_order_relaxed); }
-
-  std::uint64_t worker_run_count() const noexcept { return worker_run_count_.load(std::memory_order_relaxed); }
-
   bool is_current_thread_worker() const noexcept { return running_on_this_worker(); }
 
   template <class fn>
@@ -190,8 +258,6 @@ class thread_pool_scheduler {
       queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
       return false;
     }
-
-    scheduled_run_count_.fetch_add(1u, std::memory_order_relaxed);
     ready_.release();
     return true;
   }
@@ -344,7 +410,6 @@ class thread_pool_scheduler {
     void (*completion_fn)(void*) noexcept = slot->completion_fn;
     slot->completion_ctx = nullptr;
     slot->completion_fn = nullptr;
-    worker_run_count_.fetch_add(1u, std::memory_order_relaxed);
     queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
     slot->sequence.store(pos + capacity, std::memory_order_release);
     if (completion_fn != nullptr) {
@@ -419,121 +484,7 @@ class thread_pool_scheduler {
   std::atomic<std::size_t> queued_or_running_ = 0u;
   std::atomic<bool> inline_active_ = false;
   std::atomic<bool> stopping_ = false;
-  std::atomic<std::uint64_t> immediate_run_count_ = 0u;
-  std::atomic<std::uint64_t> scheduled_run_count_ = 0u;
-  std::atomic<std::uint64_t> worker_run_count_ = 0u;
   inline static thread_local const thread_pool_scheduler* active_worker_scheduler_ = nullptr;
-};
-
-template <class scheduler>
-class thread_pool_scheduler_ref {
- public:
-  static constexpr bool guarantees_fifo = scheduler::guarantees_fifo;
-  static constexpr bool single_consumer = scheduler::single_consumer;
-  static constexpr bool multi_consumer = scheduler::multi_consumer;
-  static constexpr bool owns_workers = false;
-  static constexpr bool run_to_completion = true;
-  static constexpr std::size_t static_worker_count = scheduler::static_worker_count;
-  static constexpr std::size_t static_capacity = scheduler::static_capacity;
-
-  thread_pool_scheduler_ref() = delete;
-  explicit thread_pool_scheduler_ref(scheduler& scheduler_in) noexcept : scheduler_(&scheduler_in) {}
-
-  class join_group {
-   public:
-    join_group() = default;
-    ~join_group() = default;
-
-    join_group(const join_group&) = delete;
-    join_group& operator=(const join_group&) = delete;
-    join_group(join_group&&) = delete;
-    join_group& operator=(join_group&&) = delete;
-
-    bool wait() noexcept {
-      // Spin-join on pending_ rather than blocking on a per-group semaphore.
-      // The group is caller-owned and typically stack-reused across fork/joins,
-      // so a notify-based wakeup is unsafe: the waiter could observe completion,
-      // return, and destroy the group before the last completer finishes its
-      // release()/notify, faulting on freed semaphore state. With a plain spin,
-      // a completer's final touch of the group is its pending_ decrement, and
-      // wait() returns only after observing pending_ == 0 (all decrements done),
-      // so nothing accesses the group after the caller may destroy it. The wait
-      // is a bounded RTC fork/join over already-submitted lanes, so the producer
-      // core would otherwise be idle; spinning gives the lowest join latency.
-      while (pending_.load(std::memory_order_acquire) != 0u) {
-        cpu_relax();
-      }
-      // pending_ == 0 means every completer is done touching the group, so the
-      // owning thread can now read and clear accepted_ with no contention. The
-      // clear lets a stack-reused join_group start the next round clean: without
-      // it, a single rejected lane would make wait() return false on every later
-      // round even when all lanes succeed.
-      const bool accepted = accepted_.load(std::memory_order_acquire);
-      accepted_.store(true, std::memory_order_release);
-      return accepted;
-    }
-
-   private:
-    friend class thread_pool_scheduler_ref;
-
-    void start_one() noexcept { pending_.fetch_add(1u, std::memory_order_acq_rel); }
-
-    void reject_one() noexcept {
-      accepted_.store(false, std::memory_order_release);
-      complete_one();
-    }
-
-    void reject() noexcept { accepted_.store(false, std::memory_order_release); }
-
-    void complete_one() noexcept { pending_.fetch_sub(1u, std::memory_order_acq_rel); }
-
-    static void complete_one(void* ctx) noexcept { static_cast<join_group*>(ctx)->complete_one(); }
-
-    std::atomic<std::uint32_t> pending_ = 0u;
-    std::atomic<bool> accepted_ = true;
-  };
-
-  template <class fn>
-  bool try_run_immediate(fn&& fn_in) noexcept(noexcept(std::forward<fn>(fn_in)())) {
-    return scheduler_->try_run_immediate(std::forward<fn>(fn_in));
-  }
-
-  template <class fn>
-  bool try_submit(join_group& group, fn&& fn_in) noexcept {
-    if (scheduler_->is_current_thread_worker()) {
-      group.reject();
-      return false;
-    }
-
-    group.start_one();
-    const bool submitted = scheduler_->try_submit_with_completion(std::forward<fn>(fn_in), &group, join_group::complete_one);
-    if (!submitted) {
-      group.reject_one();
-      return false;
-    }
-    return true;
-  }
-
-  template <class fn>
-  void schedule(fn&& fn_in) noexcept {
-    if (!scheduler_->run_or_schedule_and_wait(std::forward<fn>(fn_in))) {
-      std::terminate();
-    }
-  }
-
-  template <class fn>
-  bool run_or_schedule_and_wait(fn&& fn_in) noexcept {
-    return scheduler_->run_or_schedule_and_wait(std::forward<fn>(fn_in));
-  }
-
-  std::uint64_t immediate_run_count() const noexcept { return scheduler_->immediate_run_count(); }
-
-  std::uint64_t scheduled_run_count() const noexcept { return scheduler_->scheduled_run_count(); }
-
-  std::uint64_t worker_run_count() const noexcept { return scheduler_->worker_run_count(); }
-
- private:
-  scheduler* scheduler_ = nullptr;
 };
 
 }  // namespace policy
