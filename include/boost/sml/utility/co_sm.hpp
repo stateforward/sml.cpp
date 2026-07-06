@@ -827,7 +827,7 @@ class co_sm {
             exception = std::current_exception();
           }
 #else
-          accepted = self.state_machine_.process_event(event_value);
+        accepted = self.state_machine_.process_event(event_value);
 #endif
           if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
             self.async_dispatch_active_.release();

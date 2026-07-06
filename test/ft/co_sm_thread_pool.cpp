@@ -177,7 +177,7 @@ struct nested_machine {
 };
 
 using nested_sm = utility::co_sm<nested_machine, policy::coroutine_scheduler<scheduler_t>,
-                                policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, nested_context>;
+                                 policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, nested_context>;
 
 #if !BOOST_SML_DISABLE_EXCEPTIONS
 struct throwing_move_event {
