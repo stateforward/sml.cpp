@@ -684,6 +684,9 @@ class co_sm {
       return accepted;
     } else if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
       if (!async_dispatch_active_.try_acquire()) {
+        if (active_async_dispatch_owner_ == this) {
+          return state_machine_.process_event(event);
+        }
         return false;
       }
       struct active_reset {
@@ -761,7 +764,23 @@ class co_sm {
   template <class TEvent>
   static bool_task process_event_async_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self, TEvent&& event) {
     (void)allocator;
-    co_return co_await process_event_awaitable<typename std::decay<TEvent>::type>{self, static_cast<TEvent&&>(event)};
+    if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
+      struct setup_release {
+        co_sm& self;
+        bool active = true;
+        ~setup_release() noexcept {
+          if (active) {
+            self.async_dispatch_active_.release();
+          }
+        }
+        void disarm() noexcept { active = false; }
+      } release{self};
+      auto awaitable = process_event_awaitable<typename std::decay<TEvent>::type>{self, static_cast<TEvent&&>(event)};
+      release.disarm();
+      co_return co_await awaitable;
+    } else {
+      co_return co_await process_event_awaitable<typename std::decay<TEvent>::type>{self, static_cast<TEvent&&>(event)};
+    }
   }  // GCOVR_EXCL_LINE
 
   // External-completion dispatch: (1) commit sweep — completions fired between
@@ -789,21 +808,40 @@ class co_sm {
     }
 
     void await_suspend(std::coroutine_handle<> handle) {
-      self.scheduler_.schedule([this, handle]() mutable {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
-        try {
-          accepted = self.state_machine_.process_event(event_value);
-        } catch (...) {
-          exception = std::current_exception();
-        }
-#else
-        accepted = self.state_machine_.process_event(event_value);
+      try {
 #endif
+        self.scheduler_.schedule([this, handle]() mutable {
+          struct active_owner_scope {
+            const co_sm* previous;
+            explicit active_owner_scope(const co_sm* current) noexcept : previous(active_async_dispatch_owner_) {
+              active_async_dispatch_owner_ = current;
+            }
+            ~active_owner_scope() noexcept { active_async_dispatch_owner_ = previous; }
+          };
+          active_owner_scope owner{&self};
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+          try {
+            accepted = self.state_machine_.process_event(event_value);
+          } catch (...) {
+            exception = std::current_exception();
+          }
+#else
+          accepted = self.state_machine_.process_event(event_value);
+#endif
+          if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
+            self.async_dispatch_active_.release();
+          }
+          handle.resume();
+        });
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+      } catch (...) {
         if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
           self.async_dispatch_active_.release();
         }
-        handle.resume();
-      });
+        throw;
+      }
+#endif
     }
 
     bool await_resume() const {
@@ -837,6 +875,7 @@ class co_sm {
   // so the outermost dispatch's run-to-completion drain stays intact.
   std::size_t external_dispatch_depth_ = 0;
   async_dispatch_flag async_dispatch_active_{};
+  inline static thread_local const co_sm* active_async_dispatch_owner_ = nullptr;
 };
 
 }  // namespace utility

@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <new>
+#include <stdexcept>
 #include <thread>
 
 #if !defined(_WIN32)
@@ -34,6 +35,8 @@ static_assert(policy::valid_coroutine_scheduler<scheduler_t>, "thread_pool_sched
 namespace {
 
 struct e1 {};
+struct e_nested {};
+struct e_probe {};
 const auto idle = sml::state<class idle>;
 const auto s1 = sml::state<class s1>;
 
@@ -145,6 +148,68 @@ struct blocking_machine {
 
 using blocking_sm = utility::co_sm<blocking_machine, policy::coroutine_scheduler<scheduler_t>,
                                    policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, blocking_context>;
+
+struct nested_context {
+  void* self = nullptr;
+  bool (*nested_probe)(void*) = nullptr;
+  std::atomic<int>* calls = nullptr;
+  std::atomic<int>* nested_accepts = nullptr;
+};
+
+struct nested_machine {
+  auto operator()() const {
+    using namespace sml;
+    const auto enter_nested = [](nested_context& context) {
+      context.calls->fetch_add(1, std::memory_order_acq_rel);
+      if (context.nested_probe(context.self)) {
+        context.nested_accepts->fetch_add(1, std::memory_order_acq_rel);
+      }
+    };
+    const auto record_probe = [](nested_context& context) { context.calls->fetch_add(1, std::memory_order_acq_rel); };
+    // clang-format off
+    return make_transition_table(
+      *idle + event<e_nested> / enter_nested = s1,
+       idle + event<e_probe> / record_probe = idle,
+       s1 + event<e_probe> / record_probe = s1
+    );
+    // clang-format on
+  }
+};
+
+using nested_sm = utility::co_sm<nested_machine, policy::coroutine_scheduler<scheduler_t>,
+                                policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, nested_context>;
+
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+struct throwing_move_event {
+  throwing_move_event() = default;
+  throwing_move_event(const throwing_move_event&) noexcept = default;
+  throwing_move_event(throwing_move_event&&) {
+    if (throw_on_move) {
+      throw std::runtime_error("move failed");
+    }
+  }
+
+  static bool throw_on_move;
+};
+
+bool throwing_move_event::throw_on_move = false;
+
+struct throwing_move_machine {
+  auto operator()() const {
+    using namespace sml;
+    const auto record = [](simple_context& context) { context.calls->fetch_add(1, std::memory_order_acq_rel); };
+    // clang-format off
+    return make_transition_table(
+      *idle + event<throwing_move_event> / record = s1
+    );
+    // clang-format on
+  }
+};
+
+using throwing_move_sm =
+    utility::co_sm<throwing_move_machine, policy::coroutine_scheduler<scheduler_t>,
+                   policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, simple_context>;
+#endif
 
 #if !defined(_WIN32)
 void destroy_incomplete_task_child() {
@@ -287,6 +352,54 @@ test thread_pool_co_sm_rejects_concurrent_dispatch_to_same_actor = [] {
   expect(wait_until([&first] { return first.await_ready(); }));
   expect(first.result());
   expect(1 == calls.load(std::memory_order_acquire));
+};
+
+test thread_pool_co_sm_process_event_allows_same_stack_reentry = [] {
+  std::atomic<int> calls{0};
+  std::atomic<int> nested_accepts{0};
+  nested_context context{};
+  nested_sm sm{context};
+  context.self = &sm;
+  context.nested_probe = [](void* self) { return static_cast<nested_sm*>(self)->process_event(e_probe{}); };
+  context.calls = &calls;
+  context.nested_accepts = &nested_accepts;
+
+  auto task = sm.process_event_async(e_nested{});
+
+  expect(wait_until([&task] { return task.await_ready(); }));
+  expect(task.result());
+  expect(2 == calls.load(std::memory_order_acquire));
+  expect(1 == nested_accepts.load(std::memory_order_acquire));
+  expect(sm.is(s1));
+};
+
+test thread_pool_co_sm_setup_exception_releases_actor_guard = [] {
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+  std::atomic<int> calls{0};
+  simple_context context{&calls};
+  throwing_move_sm sm{context};
+
+  throwing_move_event event{};
+  throwing_move_event::throw_on_move = true;
+  auto failed = sm.process_event_async(event);
+  throwing_move_event::throw_on_move = false;
+
+  expect(failed.await_ready());
+  bool got_runtime_error = false;
+  try {
+    (void)failed.result();
+  } catch (const std::runtime_error&) {
+    got_runtime_error = true;
+  }
+  expect(got_runtime_error);
+
+  auto recovered = sm.process_event_async(throwing_move_event{});
+  expect(wait_until([&recovered] { return recovered.await_ready(); }));
+  expect(recovered.result());
+  expect(1 == calls.load(std::memory_order_acquire));
+#else
+  expect(true);
+#endif
 };
 
 test thread_pool_co_sm_different_actors_run_concurrently = [] {

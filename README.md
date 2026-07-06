@@ -167,7 +167,7 @@ bool pooled_accepted = pooled_task.result();
 |--------|-------------|
 | `inline_scheduler` | Runs tasks immediately |
 | `fifo_scheduler<Capacity, InlineBytes>` | FIFO queue with bounded inline storage (default) |
-| `thread_pool_scheduler<Workers, Capacity, InlineBytes>` | Starts `process_event_async` on worker threads and returns a task to await later; same-actor overlap is rejected |
+| `thread_pool_scheduler<Workers, Capacity, InlineBytes>` | Starts `process_event_async` on worker threads and returns a task to await later; concurrent same-actor overlap is rejected |
 | `coroutine_scheduler<TScheduler>` | Wraps any scheduler for the coroutine path |
 
 `thread_pool_scheduler::schedule(fn)` is nonblocking. Use `run_or_schedule_and_wait(fn)` or `thread_pool_scheduler::join_group` at RTC call sites that need an immediate join. Destroying an incomplete `bool_task` is a hard contract violation and terminates; keep the task alive until it is ready or awaited.
