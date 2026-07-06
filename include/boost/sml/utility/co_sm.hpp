@@ -735,6 +735,13 @@ class co_sm {
         async_dispatch_flag& active;
         ~active_reset() noexcept { active.release(); }
       } reset{async_dispatch_active_};
+      struct active_owner_scope {
+        const co_sm* previous;
+        explicit active_owner_scope(const co_sm* current) noexcept : previous(active_async_dispatch_owner_) {
+          active_async_dispatch_owner_ = current;
+        }
+        ~active_owner_scope() noexcept { active_async_dispatch_owner_ = previous; }
+      } owner{this};
       return state_machine_.process_event(event);
     } else {
       return state_machine_.process_event(event);

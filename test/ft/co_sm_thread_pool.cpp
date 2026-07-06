@@ -373,6 +373,23 @@ test thread_pool_co_sm_process_event_allows_same_stack_reentry = [] {
   expect(sm.is(s1));
 };
 
+test thread_pool_co_sm_direct_process_event_allows_same_stack_reentry = [] {
+  std::atomic<int> calls{0};
+  std::atomic<int> nested_accepts{0};
+  nested_context context{};
+  nested_sm sm{context};
+  context.self = &sm;
+  context.nested_probe = [](void* self) { return static_cast<nested_sm*>(self)->process_event(e_probe{}); };
+  context.calls = &calls;
+  context.nested_accepts = &nested_accepts;
+
+  expect(sm.process_event(e_nested{}));
+
+  expect(2 == calls.load(std::memory_order_acquire));
+  expect(1 == nested_accepts.load(std::memory_order_acquire));
+  expect(sm.is(s1));
+};
+
 test thread_pool_co_sm_setup_exception_releases_actor_guard = [] {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
   std::atomic<int> calls{0};
