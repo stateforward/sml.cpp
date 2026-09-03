@@ -92,6 +92,10 @@ class thread_pool_scheduler {
   static constexpr bool run_to_completion = false;
   static constexpr std::size_t static_worker_count = worker_count;
   static constexpr std::size_t static_capacity = capacity;
+#if defined(BOOST_SML_THREAD_POOL_SCHEDULER_TEST_HOOKS)
+  using batch_reservation_hook = void (*)(std::size_t, std::size_t) noexcept;
+  inline static batch_reservation_hook test_batch_reservation_hook = nullptr;
+#endif
 
   class worker_budget {
    public:
@@ -262,16 +266,22 @@ class thread_pool_scheduler {
     const std::size_t start = next_worker_.fetch_add(batch_size, std::memory_order_relaxed) % active_worker_count_;
     for (std::size_t offset = 0u; offset < active_worker_count_ && claimed_count < batch_size; ++offset) {
       const std::size_t worker_index = (start + offset) % active_worker_count_;
-      bool expected = true;
-      if (worker_slots_[worker_index].idle.compare_exchange_strong(expected, false, std::memory_order_acq_rel,
-                                                                   std::memory_order_acquire)) {
+      worker_state expected = worker_state::idle;
+      if (worker_slots_[worker_index].state.compare_exchange_strong(expected, worker_state::reserved,
+                                                                    std::memory_order_acq_rel,
+                                                                    std::memory_order_acquire)) {
         claimed_workers[claimed_count++] = worker_index;
       }
     }
-
+#if defined(BOOST_SML_THREAD_POOL_SCHEDULER_TEST_HOOKS)
+    if (test_batch_reservation_hook != nullptr) {
+      test_batch_reservation_hook(claimed_count, batch_size);
+    }
+#endif
     if (claimed_count != batch_size) {
       for (std::size_t index = 0u; index < claimed_count; ++index) {
-        worker_slots_[claimed_workers[index]].idle.store(true, std::memory_order_release);
+        worker_slots_[claimed_workers[index]].state.store(worker_state::idle, std::memory_order_release);
+        worker_slots_[claimed_workers[index]].state.notify_all();
       }
       queued_or_running_.fetch_sub(batch_size, std::memory_order_acq_rel);
       group.reject();
@@ -281,8 +291,8 @@ class thread_pool_scheduler {
     std::size_t task_index = 0u;
     (set_batch_task(group, claimed_workers[task_index++], std::forward<fns>(fns_in)), ...);
     for (const std::size_t worker_index : claimed_workers) {
-      worker_slots_[worker_index].batch_ready.store(true, std::memory_order_release);
-      worker_slots_[worker_index].batch_ready.notify_one();
+      worker_slots_[worker_index].state.store(worker_state::committed, std::memory_order_release);
+      worker_slots_[worker_index].state.notify_one();
     }
     for (const std::size_t worker_index : claimed_workers) {
       worker_slots_[worker_index].ready.release();
@@ -397,12 +407,13 @@ class thread_pool_scheduler {
       completion_fn = nullptr;
     }
   };
+  enum class worker_state : unsigned char { idle, queue_running, reserved, committed };
+
   struct worker_slot {
     task_slot batch_task{};
     std::counting_semaphore<> ready{0};
     std::thread thread{};
-    std::atomic<bool> idle = true;
-    std::atomic<bool> batch_ready = false;
+    std::atomic<worker_state> state = worker_state::idle;
   };
 
   static constexpr std::size_t index_mask = capacity - 1u;
@@ -426,6 +437,7 @@ class thread_pool_scheduler {
     } catch (...) {
       stopping_.store(true, std::memory_order_release);
       for (std::size_t i = 0; i < started; ++i) {
+        worker_slots_[i].state.notify_all();
         worker_slots_[i].ready.release();
       }
       for (std::size_t i = 0; i < started; ++i) {
@@ -445,6 +457,7 @@ class thread_pool_scheduler {
     }
 
     for (std::size_t i = 0; i < active_worker_count_; ++i) {
+      worker_slots_[i].state.notify_all();
       worker_slots_[i].ready.release();
     }
 
@@ -524,7 +537,7 @@ class thread_pool_scheduler {
     queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
     slot->sequence.store(pos + capacity, std::memory_order_release);
     if (executing_worker != nullptr) {
-      executing_worker->idle.store(true, std::memory_order_release);
+      executing_worker->state.store(worker_state::idle, std::memory_order_release);
     }
     if (completion_fn != nullptr) {
       completion_fn(completion_ctx);
@@ -549,31 +562,29 @@ class thread_pool_scheduler {
     for (;;) {
       worker.ready.acquire();
 
-      if (worker.batch_ready.load(std::memory_order_acquire)) {
-        run_batch_task(worker);
-        continue;
-      }
-      if (stopping_.load(std::memory_order_acquire)) {
-        return;
-      }
+      for (;;) {
+        worker_state state = worker.state.load(std::memory_order_acquire);
+        if (state == worker_state::reserved) {
+          worker.state.wait(worker_state::reserved, std::memory_order_acquire);
+          continue;
+        }
+        if (state == worker_state::committed) {
+          run_batch_task(worker);
+          break;
+        }
+        if (stopping_.load(std::memory_order_acquire)) {
+          return;
+        }
 
-      bool expected = true;
-      if (!worker.idle.compare_exchange_strong(expected, false, std::memory_order_acq_rel,
-                                                std::memory_order_acquire)) {
-        // A batch reserved this worker after it consumed an older queue wake.
-        // Block until publication rather than poll. The later batch semaphore
-        // permit remains counted and wakes this worker again to drain the queue
-        // task whose permit it consumed here.
-        worker.batch_ready.wait(false, std::memory_order_acquire);
-        run_batch_task(worker);
-        continue;
-      }
-
-      // Queue tasks are published before their per-worker wake. Another worker
-      // may already have consumed this task, in which case this wake is stale
-      // and can be discarded without stranding work.
-      if (!try_dequeue_and_run(&worker)) {
-        worker.idle.store(true, std::memory_order_release);
+        worker_state expected = worker_state::idle;
+        if (!worker.state.compare_exchange_strong(expected, worker_state::queue_running, std::memory_order_acq_rel,
+                                                   std::memory_order_acquire)) {
+          continue;
+        }
+        if (!try_dequeue_and_run(&worker)) {
+          worker.state.store(worker_state::idle, std::memory_order_release);
+        }
+        break;
       }
     }
   }
@@ -584,9 +595,8 @@ class thread_pool_scheduler {
     void (*completion_fn)(void*) noexcept = worker.batch_task.completion_fn;
     worker.batch_task.completion_ctx = nullptr;
     worker.batch_task.completion_fn = nullptr;
-    worker.batch_ready.store(false, std::memory_order_release);
+    worker.state.store(worker_state::idle, std::memory_order_release);
     queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
-    worker.idle.store(true, std::memory_order_release);
     if (completion_fn != nullptr) {
       completion_fn(completion_ctx);
     }

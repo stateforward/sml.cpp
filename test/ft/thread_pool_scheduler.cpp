@@ -7,6 +7,7 @@
 //
 #include <atomic>
 #include <cstdlib>
+#define BOOST_SML_THREAD_POOL_SCHEDULER_TEST_HOOKS 1
 #include <boost/sml/utility/thread_pool_scheduler.hpp>
 #include <cstddef>
 #include <new>
@@ -50,6 +51,22 @@ class allocation_scope {
 
 #if BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
 namespace policy = boost::sml::utility::policy;
+namespace rollback_probe {
+std::atomic<bool> pause{false};
+std::atomic<bool> reserved{false};
+std::atomic<bool> release{false};
+
+void hook(const std::size_t claimed, const std::size_t requested) noexcept {
+  if (!pause.load(std::memory_order_acquire) || claimed == 0u || claimed == requested) {
+    return;
+  }
+  reserved.store(true, std::memory_order_release);
+  while (!release.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+}
+}  // namespace rollback_probe
+
 
 using pool_t = policy::thread_pool_scheduler<8>;
 
@@ -335,6 +352,53 @@ test thread_pool_scheduler_batch_dispatch_does_not_allocate = [] {
   }
   expect(0u == allocations);
   expect(2 == calls.load(std::memory_order_acquire));
+};
+
+test thread_pool_scheduler_queue_wake_survives_batch_reservation_rollback = [] {
+  using rollback_pool_t = policy::thread_pool_scheduler<2, 16, 128>;
+  rollback_pool_t scheduler{};
+  rollback_pool_t::join_group occupied{};
+  std::atomic<bool> occupied_entered{false};
+  std::atomic<bool> release_occupied{false};
+  expect(1u == scheduler.try_submit_batch(occupied, [&]() noexcept {
+    occupied_entered.store(true, std::memory_order_release);
+    while (!release_occupied.load(std::memory_order_acquire)) {
+      policy::cpu_relax();
+    }
+  }));
+  while (!occupied_entered.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+
+  rollback_probe::pause.store(true, std::memory_order_release);
+  rollback_probe::reserved.store(false, std::memory_order_release);
+  rollback_probe::release.store(false, std::memory_order_release);
+  rollback_pool_t::test_batch_reservation_hook = rollback_probe::hook;
+
+  rollback_pool_t::join_group rejected{};
+  std::atomic<std::size_t> rejected_count{2u};
+  std::thread submit_batch([&]() {
+    rejected_count.store(
+        scheduler.try_submit_batch(rejected, []() noexcept {}, []() noexcept {}), std::memory_order_release);
+  });
+  while (!rollback_probe::reserved.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+
+  std::atomic<bool> queue_ran{false};
+  expect(scheduler.try_submit([&]() noexcept { queue_ran.store(true, std::memory_order_release); }));
+  rollback_probe::release.store(true, std::memory_order_release);
+  submit_batch.join();
+  rollback_pool_t::test_batch_reservation_hook = nullptr;
+  rollback_probe::pause.store(false, std::memory_order_release);
+
+  expect(0u == rejected_count.load(std::memory_order_acquire));
+  expect(!rejected.wait());
+  while (!queue_ran.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+  release_occupied.store(true, std::memory_order_release);
+  expect(occupied.wait());
 };
 
 #else
