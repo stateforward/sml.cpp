@@ -43,6 +43,9 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+#include <stdexcept>
+#endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>  // _mm_pause / __yield
@@ -90,9 +93,48 @@ class thread_pool_scheduler {
   static constexpr std::size_t static_worker_count = worker_count;
   static constexpr std::size_t static_capacity = capacity;
 
+  class worker_budget {
+   public:
+    explicit operator bool() const noexcept { return value_ != 0u; }
+    std::size_t value() const noexcept { return value_; }
+
+   private:
+    friend class thread_pool_scheduler;
+    worker_budget() = default;
+    explicit worker_budget(const std::size_t value) noexcept : value_(value) {}
+
+    std::size_t value_ = 0u;
+  };
+
+  // Initialization-only validation for requested active workers in
+  // [1, static_worker_count]. An invalid request returns an empty status token.
+  static worker_budget try_worker_budget(const std::size_t requested) noexcept {
+    return requested > 0u && requested <= worker_count ? worker_budget{requested} : worker_budget{};
+  }
+
   // std::thread may allocate OS/runtime resources here; dispatch uses only the
-  // fixed task ring below.
-  thread_pool_scheduler() { start_workers(); }
+  // fixed task storage below. The default starts every statically provisioned
+  // worker.
+  thread_pool_scheduler() : active_worker_count_(worker_count) { start_workers(); }
+
+  // Initialization-only. Precondition: budget is a successful result from
+  // try_worker_budget(); an invalid token terminates without starting workers.
+  explicit thread_pool_scheduler(const worker_budget budget) : active_worker_count_(budget.value()) {
+    if (!budget) {
+      std::terminate();
+    }
+    start_workers();
+  }
+
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+  explicit thread_pool_scheduler(const std::size_t active_worker_count)
+      : active_worker_count_(active_worker_count) {
+    if (active_worker_count_ == 0u || active_worker_count_ > worker_count) {
+      throw std::invalid_argument{"thread_pool_scheduler worker count"};
+    }
+    start_workers();
+  }
+#endif
 
   ~thread_pool_scheduler() { stop_workers(); }
 
@@ -199,6 +241,54 @@ class thread_pool_scheduler {
     }
     return true;
   }
+  // Runtime-safe for external producer threads. Atomically reserves one
+  // distinct active worker for every callable. Either the full batch is
+  // published, or no callable is moved or executed and the group reports
+  // rejection. Callables are moved into fixed scheduler-owned storage and
+  // destroyed by their worker; callers must wait before reusing the group.
+  template <class... fns>
+  std::size_t try_submit_batch(join_group& group, fns&&... fns_in) noexcept {
+    constexpr std::size_t batch_size = sizeof...(fns);
+    static_assert(batch_size > 0u, "thread_pool_scheduler batch must contain tasks");
+    if (running_on_this_worker() || stopping_.load(std::memory_order_acquire) ||
+        batch_size > active_worker_count_) {
+      group.reject();
+      return 0u;
+    }
+    queued_or_running_.fetch_add(batch_size, std::memory_order_acq_rel);
+
+    std::array<std::size_t, batch_size> claimed_workers{};
+    std::size_t claimed_count = 0u;
+    const std::size_t start = next_worker_.fetch_add(batch_size, std::memory_order_relaxed) % active_worker_count_;
+    for (std::size_t offset = 0u; offset < active_worker_count_ && claimed_count < batch_size; ++offset) {
+      const std::size_t worker_index = (start + offset) % active_worker_count_;
+      bool expected = true;
+      if (worker_slots_[worker_index].idle.compare_exchange_strong(expected, false, std::memory_order_acq_rel,
+                                                                   std::memory_order_acquire)) {
+        claimed_workers[claimed_count++] = worker_index;
+      }
+    }
+
+    if (claimed_count != batch_size) {
+      for (std::size_t index = 0u; index < claimed_count; ++index) {
+        worker_slots_[claimed_workers[index]].idle.store(true, std::memory_order_release);
+      }
+      queued_or_running_.fetch_sub(batch_size, std::memory_order_acq_rel);
+      group.reject();
+      return 0u;
+    }
+
+    std::size_t task_index = 0u;
+    (set_batch_task(group, claimed_workers[task_index++], std::forward<fns>(fns_in)), ...);
+    for (const std::size_t worker_index : claimed_workers) {
+      worker_slots_[worker_index].batch_ready.store(true, std::memory_order_release);
+      worker_slots_[worker_index].batch_ready.notify_one();
+    }
+    for (const std::size_t worker_index : claimed_workers) {
+      worker_slots_[worker_index].ready.release();
+    }
+    return batch_size;
+  }
 
   template <class fn>
   void schedule(fn&& fn_in) noexcept {
@@ -245,6 +335,7 @@ class thread_pool_scheduler {
   }
 
   bool is_current_thread_worker() const noexcept { return running_on_this_worker(); }
+  std::size_t active_worker_count() const noexcept { return active_worker_count_; }
 
   template <class fn>
   bool try_submit_with_completion(fn&& fn_in, void* completion_ctx, void (*completion_fn)(void*) noexcept) noexcept {
@@ -258,7 +349,8 @@ class thread_pool_scheduler {
       queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
       return false;
     }
-    ready_.release();
+    const std::size_t worker_index = next_worker_.fetch_add(1u, std::memory_order_relaxed) % active_worker_count_;
+    worker_slots_[worker_index].ready.release();
     return true;
   }
 
@@ -305,6 +397,13 @@ class thread_pool_scheduler {
       completion_fn = nullptr;
     }
   };
+  struct worker_slot {
+    task_slot batch_task{};
+    std::counting_semaphore<> ready{0};
+    std::thread thread{};
+    std::atomic<bool> idle = true;
+    std::atomic<bool> batch_ready = false;
+  };
 
   static constexpr std::size_t index_mask = capacity - 1u;
 
@@ -315,23 +414,23 @@ class thread_pool_scheduler {
 #if BOOST_SML_DISABLE_EXCEPTIONS
     // No-exceptions builds cannot observe a failed std::thread spawn (it calls
     // std::terminate), so there is nothing to roll back; spawn directly.
-    for (std::size_t started = 0u; started < worker_count; ++started) {
-      workers_[started] = std::thread([this]() noexcept { worker_loop(); });
+    for (std::size_t started = 0u; started < active_worker_count_; ++started) {
+      worker_slots_[started].thread = std::thread([this, started]() noexcept { worker_loop(started); });
     }
 #else
     std::size_t started = 0u;
     try {
-      for (; started < worker_count; ++started) {
-        workers_[started] = std::thread([this]() noexcept { worker_loop(); });
+      for (; started < active_worker_count_; ++started) {
+        worker_slots_[started].thread = std::thread([this, started]() noexcept { worker_loop(started); });
       }
     } catch (...) {
       stopping_.store(true, std::memory_order_release);
       for (std::size_t i = 0; i < started; ++i) {
-        ready_.release();
+        worker_slots_[i].ready.release();
       }
       for (std::size_t i = 0; i < started; ++i) {
-        if (workers_[i].joinable()) {
-          workers_[i].join();
+        if (worker_slots_[i].thread.joinable()) {
+          worker_slots_[i].thread.join();
         }
       }
       throw;
@@ -345,14 +444,15 @@ class thread_pool_scheduler {
       return;
     }
 
-    for (std::size_t i = 0; i < worker_count; ++i) {
-      ready_.release();
+    for (std::size_t i = 0; i < active_worker_count_; ++i) {
+      worker_slots_[i].ready.release();
     }
 
-    for (auto& worker : workers_) {
-      if (worker.joinable()) {
-        worker.join();
+    for (std::size_t i = 0; i < active_worker_count_; ++i) {
+      if (worker_slots_[i].thread.joinable()) {
+        worker_slots_[i].thread.join();
       }
+      worker_slots_[i].batch_task.reset();
     }
 
     clear_unrun_tasks();
@@ -361,6 +461,17 @@ class thread_pool_scheduler {
   template <class fn>
   bool try_submit_and_signal(fn&& fn_in, std::atomic<bool>& done) noexcept {
     return try_submit_with_completion(std::forward<fn>(fn_in), &done, signal_done_flag);
+  }
+
+  template <class fn>
+  void set_batch_task(join_group& group, const std::size_t worker_index, fn&& fn_in) noexcept {
+    using fn_type = std::decay_t<fn>;
+    static_assert(std::is_nothrow_constructible_v<fn_type, fn&&>,
+                  "thread_pool_scheduler batch task construction must not throw");
+    static_assert(std::is_nothrow_invocable_v<fn_type&>,
+                  "thread_pool_scheduler batch task invocation must not throw");
+    group.start_one();
+    worker_slots_[worker_index].batch_task.set(std::forward<fn>(fn_in), &group, join_group::complete_one);
   }
 
   template <class fn>
@@ -387,7 +498,7 @@ class thread_pool_scheduler {
     return true;
   }
 
-  bool try_dequeue_and_run() noexcept {
+  bool try_dequeue_and_run(worker_slot* executing_worker = nullptr) noexcept {
     task_slot* slot = nullptr;
     std::size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
     for (;;) {
@@ -412,6 +523,9 @@ class thread_pool_scheduler {
     slot->completion_fn = nullptr;
     queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
     slot->sequence.store(pos + capacity, std::memory_order_release);
+    if (executing_worker != nullptr) {
+      executing_worker->idle.store(true, std::memory_order_release);
+    }
     if (completion_fn != nullptr) {
       completion_fn(completion_ctx);
     }
@@ -422,7 +536,7 @@ class thread_pool_scheduler {
     static_cast<std::atomic<bool>*>(ctx)->store(true, std::memory_order_release);
   }
 
-  void worker_loop() noexcept {
+  void worker_loop(const std::size_t index) noexcept {
     struct worker_scope {
       const thread_pool_scheduler* previous;
       explicit worker_scope(const thread_pool_scheduler* current) noexcept : previous(active_worker_scheduler_) {
@@ -431,40 +545,53 @@ class thread_pool_scheduler {
       ~worker_scope() noexcept { active_worker_scheduler_ = previous; }
     } scope{this};
 
+    worker_slot& worker = worker_slots_[index];
     for (;;) {
-      // Claim exactly one wake permit before dequeuing, preserving the
-      // permit-per-task invariant. Spin-claim first so back-to-back fork/joins
-      // (e.g. a decode burst) keep the worker warm and skip resleep/wakeup
-      // latency between rounds, the same warm-polling strategy optimized native
-      // threadpools use; fall back to a blocking acquire once genuinely idle so
-      // a quiescent pool does not burn a core.
-      bool claimed = false;
-      for (std::size_t spin = 0; spin < k_idle_spin_budget; ++spin) {
-        if (ready_.try_acquire()) {
-          claimed = true;
-          break;
-        }
-        if (stopping_.load(std::memory_order_acquire)) {
-          return;
-        }
-        cpu_relax();
+      worker.ready.acquire();
+
+      if (worker.batch_ready.load(std::memory_order_acquire)) {
+        run_batch_task(worker);
+        continue;
       }
-      if (!claimed) {
-        ready_.acquire();
+      if (stopping_.load(std::memory_order_acquire)) {
+        return;
       }
-      // The claimed permit promises a published task or a stop signal. The task
-      // may not be visible at dequeue_pos for a few cycles, so retry rather than
-      // drop the permit (which would strand the task); re-check stop to exit.
-      while (!try_dequeue_and_run()) {
-        if (stopping_.load(std::memory_order_acquire)) {
-          return;
-        }
-        cpu_relax();
+
+      bool expected = true;
+      if (!worker.idle.compare_exchange_strong(expected, false, std::memory_order_acq_rel,
+                                                std::memory_order_acquire)) {
+        // A batch reserved this worker after it consumed an older queue wake.
+        // Block until publication rather than poll. The later batch semaphore
+        // permit remains counted and wakes this worker again to drain the queue
+        // task whose permit it consumed here.
+        worker.batch_ready.wait(false, std::memory_order_acquire);
+        run_batch_task(worker);
+        continue;
+      }
+
+      // Queue tasks are published before their per-worker wake. Another worker
+      // may already have consumed this task, in which case this wake is stale
+      // and can be discarded without stranding work.
+      if (!try_dequeue_and_run(&worker)) {
+        worker.idle.store(true, std::memory_order_release);
       }
     }
   }
 
-  static constexpr std::size_t k_idle_spin_budget = 2048;
+  void run_batch_task(worker_slot& worker) noexcept {
+    worker.batch_task.run();
+    void* completion_ctx = worker.batch_task.completion_ctx;
+    void (*completion_fn)(void*) noexcept = worker.batch_task.completion_fn;
+    worker.batch_task.completion_ctx = nullptr;
+    worker.batch_task.completion_fn = nullptr;
+    worker.batch_ready.store(false, std::memory_order_release);
+    queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
+    worker.idle.store(true, std::memory_order_release);
+    if (completion_fn != nullptr) {
+      completion_fn(completion_ctx);
+    }
+  }
+
 
   bool running_on_this_worker() const noexcept { return active_worker_scheduler_ == this; }
 
@@ -477,11 +604,12 @@ class thread_pool_scheduler {
   }
 
   std::array<task_slot, capacity> tasks_{};
-  std::array<std::thread, worker_count> workers_{};
-  std::counting_semaphore<> ready_{0};
+  std::array<worker_slot, worker_count> worker_slots_{};
+  const std::size_t active_worker_count_;
   std::atomic<std::size_t> enqueue_pos_ = 0u;
   std::atomic<std::size_t> dequeue_pos_ = 0u;
   std::atomic<std::size_t> queued_or_running_ = 0u;
+  std::atomic<std::size_t> next_worker_ = 0u;
   std::atomic<bool> inline_active_ = false;
   std::atomic<bool> stopping_ = false;
   inline static thread_local const thread_pool_scheduler* active_worker_scheduler_ = nullptr;
