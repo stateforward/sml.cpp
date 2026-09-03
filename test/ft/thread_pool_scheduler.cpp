@@ -67,6 +67,22 @@ void hook(const std::size_t claimed, const std::size_t requested) noexcept {
 }
 }  // namespace rollback_probe
 
+namespace enqueue_probe {
+std::atomic<bool> pause_first{false};
+std::atomic<bool> first_reserved{false};
+std::atomic<bool> release_first{false};
+
+void hook(const std::size_t position) noexcept {
+  if (!pause_first.load(std::memory_order_acquire) || position != 0u) {
+    return;
+  }
+  first_reserved.store(true, std::memory_order_release);
+  while (!release_first.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+}
+}  // namespace enqueue_probe
+
 
 using pool_t = policy::thread_pool_scheduler<8>;
 
@@ -399,6 +415,47 @@ test thread_pool_scheduler_queue_wake_survives_batch_reservation_rollback = [] {
   }
   release_occupied.store(true, std::memory_order_release);
   expect(occupied.wait());
+};
+
+test thread_pool_scheduler_queue_permit_waits_for_head_publication = [] {
+  using publish_pool_t = policy::thread_pool_scheduler<2, 16, 128>;
+  publish_pool_t scheduler{};
+  publish_pool_t::test_enqueue_reservation_hook = enqueue_probe::hook;
+  enqueue_probe::pause_first.store(true, std::memory_order_release);
+  enqueue_probe::first_reserved.store(false, std::memory_order_release);
+  enqueue_probe::release_first.store(false, std::memory_order_release);
+
+  publish_pool_t::join_group first{};
+  publish_pool_t::join_group second{};
+  std::atomic<bool> first_submitted{false};
+  std::atomic<bool> second_submitted{false};
+  std::atomic<int> calls{0};
+  std::thread first_producer([&]() {
+    first_submitted.store(
+        scheduler.try_submit(first, [&]() noexcept { calls.fetch_add(1, std::memory_order_relaxed); }),
+        std::memory_order_release);
+  });
+  while (!enqueue_probe::first_reserved.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+
+  std::thread second_producer([&]() {
+    second_submitted.store(
+        scheduler.try_submit(second, [&]() noexcept { calls.fetch_add(1, std::memory_order_relaxed); }),
+        std::memory_order_release);
+  });
+  second_producer.join();
+  expect(second_submitted.load(std::memory_order_acquire));
+
+  enqueue_probe::release_first.store(true, std::memory_order_release);
+  first_producer.join();
+  publish_pool_t::test_enqueue_reservation_hook = nullptr;
+  enqueue_probe::pause_first.store(false, std::memory_order_release);
+
+  expect(first_submitted.load(std::memory_order_acquire));
+  expect(first.wait());
+  expect(second.wait());
+  expect(2 == calls.load(std::memory_order_acquire));
 };
 
 #else

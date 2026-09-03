@@ -94,7 +94,9 @@ class thread_pool_scheduler {
   static constexpr std::size_t static_capacity = capacity;
 #if defined(BOOST_SML_THREAD_POOL_SCHEDULER_TEST_HOOKS)
   using batch_reservation_hook = void (*)(std::size_t, std::size_t) noexcept;
+  using enqueue_reservation_hook = void (*)(std::size_t) noexcept;
   inline static batch_reservation_hook test_batch_reservation_hook = nullptr;
+  inline static enqueue_reservation_hook test_enqueue_reservation_hook = nullptr;
 #endif
 
   class worker_budget {
@@ -505,6 +507,11 @@ class thread_pool_scheduler {
         pos = enqueue_pos_.load(std::memory_order_relaxed);
       }
     }
+#if defined(BOOST_SML_THREAD_POOL_SCHEDULER_TEST_HOOKS)
+    if (test_enqueue_reservation_hook != nullptr) {
+      test_enqueue_reservation_hook(pos);
+    }
+#endif
 
     slot->set(std::forward<fn>(fn_in), completion_ctx, completion_fn);
     slot->sequence.store(pos + 1u, std::memory_order_release);
@@ -581,8 +588,16 @@ class thread_pool_scheduler {
                                                    std::memory_order_acquire)) {
           continue;
         }
-        if (!try_dequeue_and_run(&worker)) {
-          worker.state.store(worker_state::idle, std::memory_order_release);
+        while (!try_dequeue_and_run(&worker)) {
+          if (stopping_.load(std::memory_order_acquire)) {
+            worker.state.store(worker_state::idle, std::memory_order_release);
+            return;
+          }
+          const worker_state current = worker.state.load(std::memory_order_acquire);
+          if (current != worker_state::queue_running) {
+            break;
+          }
+          cpu_relax();
         }
         break;
       }
