@@ -83,6 +83,22 @@ void hook(const std::size_t position) noexcept {
 }
 }  // namespace enqueue_probe
 
+namespace worker_wake_probe {
+std::atomic<bool> pause_worker_zero{false};
+std::atomic<bool> worker_zero_woke{false};
+std::atomic<bool> release_worker_zero{false};
+
+void hook(const std::size_t worker_index) noexcept {
+  if (worker_index != 0u || !pause_worker_zero.load(std::memory_order_acquire)) {
+    return;
+  }
+  worker_zero_woke.store(true, std::memory_order_release);
+  while (!release_worker_zero.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+}
+}  // namespace worker_wake_probe
+
 
 using pool_t = policy::thread_pool_scheduler<8>;
 
@@ -456,6 +472,36 @@ test thread_pool_scheduler_queue_permit_waits_for_head_publication = [] {
   expect(first.wait());
   expect(second.wait());
   expect(2 == calls.load(std::memory_order_acquire));
+};
+
+test thread_pool_scheduler_discards_stale_queue_permit_after_peer_drains_queue = [] {
+  using stale_pool_t = policy::thread_pool_scheduler<2, 16, 128>;
+  stale_pool_t scheduler{};
+  stale_pool_t::test_worker_wake_hook = worker_wake_probe::hook;
+  worker_wake_probe::pause_worker_zero.store(true, std::memory_order_release);
+  worker_wake_probe::worker_zero_woke.store(false, std::memory_order_release);
+  worker_wake_probe::release_worker_zero.store(false, std::memory_order_release);
+
+  stale_pool_t::join_group first{};
+  stale_pool_t::join_group second{};
+  std::atomic<int> calls{0};
+  expect(scheduler.try_submit(first, [&]() noexcept { calls.fetch_add(1, std::memory_order_relaxed); }));
+  while (!worker_wake_probe::worker_zero_woke.load(std::memory_order_acquire)) {
+    policy::cpu_relax();
+  }
+  expect(scheduler.try_submit(second, [&]() noexcept { calls.fetch_add(1, std::memory_order_relaxed); }));
+
+  expect(first.wait());
+  expect(second.wait());
+  expect(2 == calls.load(std::memory_order_acquire));
+  worker_wake_probe::release_worker_zero.store(true, std::memory_order_release);
+
+  stale_pool_t::join_group reuse{};
+  expect(scheduler.try_submit(reuse, [&]() noexcept { calls.fetch_add(1, std::memory_order_relaxed); }));
+  expect(reuse.wait());
+  stale_pool_t::test_worker_wake_hook = nullptr;
+  worker_wake_probe::pause_worker_zero.store(false, std::memory_order_release);
+  expect(3 == calls.load(std::memory_order_acquire));
 };
 
 #else

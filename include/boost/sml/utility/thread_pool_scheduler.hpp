@@ -95,8 +95,10 @@ class thread_pool_scheduler {
 #if defined(BOOST_SML_THREAD_POOL_SCHEDULER_TEST_HOOKS)
   using batch_reservation_hook = void (*)(std::size_t, std::size_t) noexcept;
   using enqueue_reservation_hook = void (*)(std::size_t) noexcept;
+  using worker_wake_hook = void (*)(std::size_t) noexcept;
   inline static batch_reservation_hook test_batch_reservation_hook = nullptr;
   inline static enqueue_reservation_hook test_enqueue_reservation_hook = nullptr;
+  inline static worker_wake_hook test_worker_wake_hook = nullptr;
 #endif
 
   class worker_budget {
@@ -518,7 +520,9 @@ class thread_pool_scheduler {
     return true;
   }
 
-  bool try_dequeue_and_run(worker_slot* executing_worker = nullptr) noexcept {
+  enum class dequeue_result : unsigned char { ran, head_reserved_unpublished, empty };
+
+  dequeue_result try_dequeue_and_run() noexcept {
     task_slot* slot = nullptr;
     std::size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
     for (;;) {
@@ -530,7 +534,8 @@ class thread_pool_scheduler {
           break;
         }
       } else if (diff < 0) {
-        return false;
+        return enqueue_pos_.load(std::memory_order_acquire) > pos ? dequeue_result::head_reserved_unpublished
+                                                                 : dequeue_result::empty;
       } else {
         pos = dequeue_pos_.load(std::memory_order_relaxed);
       }
@@ -543,13 +548,10 @@ class thread_pool_scheduler {
     slot->completion_fn = nullptr;
     queued_or_running_.fetch_sub(1u, std::memory_order_acq_rel);
     slot->sequence.store(pos + capacity, std::memory_order_release);
-    if (executing_worker != nullptr) {
-      executing_worker->state.store(worker_state::idle, std::memory_order_release);
-    }
     if (completion_fn != nullptr) {
       completion_fn(completion_ctx);
     }
-    return true;
+    return dequeue_result::ran;
   }
 
   static void signal_done_flag(void* ctx) noexcept {
@@ -568,6 +570,11 @@ class thread_pool_scheduler {
     worker_slot& worker = worker_slots_[index];
     for (;;) {
       worker.ready.acquire();
+#if defined(BOOST_SML_THREAD_POOL_SCHEDULER_TEST_HOOKS)
+      if (test_worker_wake_hook != nullptr) {
+        test_worker_wake_hook(index);
+      }
+#endif
 
       for (;;) {
         worker_state state = worker.state.load(std::memory_order_acquire);
@@ -588,16 +595,20 @@ class thread_pool_scheduler {
                                                    std::memory_order_acquire)) {
           continue;
         }
-        while (!try_dequeue_and_run(&worker)) {
-          if (stopping_.load(std::memory_order_acquire)) {
-            worker.state.store(worker_state::idle, std::memory_order_release);
-            return;
+        for (;;) {
+          const dequeue_result result = try_dequeue_and_run();
+          if (result == dequeue_result::ran || result == dequeue_result::head_reserved_unpublished) {
+            if (stopping_.load(std::memory_order_acquire)) {
+              worker.state.store(worker_state::idle, std::memory_order_release);
+              return;
+            }
+            if (result == dequeue_result::head_reserved_unpublished) {
+              cpu_relax();
+            }
+            continue;
           }
-          const worker_state current = worker.state.load(std::memory_order_acquire);
-          if (current != worker_state::queue_running) {
-            break;
-          }
-          cpu_relax();
+          worker.state.store(worker_state::idle, std::memory_order_release);
+          break;
         }
         break;
       }
@@ -621,7 +632,7 @@ class thread_pool_scheduler {
   bool running_on_this_worker() const noexcept { return active_worker_scheduler_ == this; }
 
   void clear_unrun_tasks() noexcept {
-    while (try_dequeue_and_run()) {
+    while (try_dequeue_and_run() == dequeue_result::ran) {
     }
     for (auto& task : tasks_) {
       task.reset();
