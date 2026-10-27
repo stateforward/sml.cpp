@@ -655,4 +655,128 @@ test exception_grandchild_fault_walks_to_root = [] {
   expect(sm.is(s2));
 };
 
+struct peer_faults {
+  faults left{};
+  int right_steps = 0;
+};
+
+auto left_spinning = sml::state<class left_spinning>;
+auto left_idle = sml::state<class left_idle>;
+auto right_idle = sml::state<class right_idle>;
+auto right_one = sml::state<class right_one>;
+auto right_two = sml::state<class right_two>;
+auto right_done = sml::state<class right_done>;
+
+// The left region's anonymous guard always throws and an internal row recovers it without progress; the right region
+// has a pending chain of anonymous transitions that must still run to the end in the same step.
+struct orthogonal_peer {
+  auto operator()() const {
+    using namespace sml;
+    // clang-format off
+    return make_transition_table(
+       *left_idle + event<e1> = left_spinning
+      , left_spinning [ ([](peer_faults &f) { return faulting_guard(f.left); }) ] = left_idle
+      , left_spinning + exception<exception1> / [](peer_faults &f) { ++f.left.recoveries; }
+
+      , *right_idle + event<e1> = right_one
+      , right_one / [](peer_faults &f) { ++f.right_steps; } = right_two
+      , right_two / [](peer_faults &f) { ++f.right_steps; } = right_done
+      , right_done + event<e2> = X
+    );
+    // clang-format on
+  }
+};
+
+test exception_no_progress_recovery_lets_peer_region_finish_on_process_event = [] {
+  peer_faults f{};
+  sml::sm<orthogonal_peer> sm{f};
+  expect(sm.process_event(e1{}));
+  expect(1 == f.left.attempts);
+  expect(1 == f.left.recoveries);
+  expect(2 == f.right_steps);
+  expect(sm.is(left_spinning, right_done));
+};
+
+struct orthogonal_initial_peer {
+  auto operator()() const {
+    using namespace sml;
+    // clang-format off
+    return make_transition_table(
+       (*left_spinning) [ ([](peer_faults &f) { return faulting_guard(f.left); }) ] = left_idle
+      , left_spinning + exception<exception1> / [](peer_faults &f) { ++f.left.recoveries; }
+
+      , (*right_one) / [](peer_faults &f) { ++f.right_steps; } = right_two
+      , right_two / [](peer_faults &f) { ++f.right_steps; } = right_done
+      , right_done + event<e2> = X
+    );
+    // clang-format on
+  }
+};
+
+test exception_no_progress_recovery_lets_peer_region_finish_on_start = [] {
+  peer_faults f{};
+  sml::sm<orthogonal_initial_peer> sm{f};
+  expect(1 == f.left.attempts);
+  expect(1 == f.left.recoveries);
+  expect(2 == f.right_steps);
+  expect(sm.is(left_spinning, right_done));
+};
+
+test exception_no_progress_recovery_lets_peer_region_of_child_finish = [] {
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         *idle + event<e1> = state<orthogonal_initial_peer>
+        , state<orthogonal_initial_peer> = s1
+      );
+      // clang-format on
+    }
+  };
+
+  peer_faults f{};
+  sml::sm<c> sm{f};
+  expect(sm.process_event(e1{}));
+  expect(1 == f.left.attempts);
+  expect(1 == f.left.recoveries);
+  expect(2 == f.right_steps);
+  expect(sm.is<decltype(sml::state<orthogonal_initial_peer>)>(left_spinning, right_done));
+};
+
+test exception_no_progress_recovery_lets_peer_child_region_finish = [] {
+  struct right_child {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         (*right_one) / [](peer_faults &f) { ++f.right_steps; } = right_two
+        , right_two / [](peer_faults &f) { ++f.right_steps; } = X
+      );
+      // clang-format on
+    }
+  };
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         (*left_spinning) [ ([](peer_faults &f) { return faulting_guard(f.left); }) ] = left_idle
+        , left_spinning + exception<exception1> / [](peer_faults &f) { ++f.left.recoveries; }
+
+        , *state<right_child> = right_done
+        , right_done + event<e2> = X
+      );
+      // clang-format on
+    }
+  };
+
+  peer_faults f{};
+  sml::sm<c> sm{f};
+  expect(1 == f.left.attempts);
+  expect(1 == f.left.recoveries);
+  expect(2 == f.right_steps);
+  expect(sm.is(left_spinning, right_done));
+};
+
 #endif
