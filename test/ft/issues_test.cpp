@@ -772,12 +772,18 @@ test issue_182 = [] {
 
   issue_182_ctx handled_ctx{};
   sml::sm<transitions> handled{handled_ctx};
-  handled.process_event(issue_182_request{true});
+  bool recoverable_caught = false;
+  try {
+    handled.process_event(issue_182_request{true});
+  } catch (const issue_182_recoverable_error&) {
+    recoverable_caught = true;
+  }
   expect(handled.is(sml::state<issue_182_error>));
   // NOTE(user-error): Exception transitions run from the current state after transition processing.
   // Here the machine has already moved to `issue_182_error`, so the `idle + exception<...>` handler
-  // does not execute.
+  // does not execute, and the fault no row handles propagates to the caller.
   expect(-1 == handled_ctx.received_error_code);
+  expect(recoverable_caught);
 
   issue_182_ctx unhandled_ctx{};
   sml::sm<transitions> unhandled{unhandled_ctx};
@@ -788,9 +794,8 @@ test issue_182 = [] {
     caught = true;
   }
 
-  // NOTE(user-error): Unhandled action exceptions are consumed by SML exception processing by
-  // default, they are not propagated to the caller unless explicitly modeled.
-  expect(!caught);
+  // A fault that no exception row handles propagates to the caller of process_event.
+  expect(caught);
   expect(unhandled.is(sml::state<issue_182_error>));
 };
 

@@ -1084,6 +1084,12 @@ struct completion : internal_event {
   constexpr explicit completion(const TEvent &event) : event_(event) {}
   const TEvent &event_;
 };
+template <class T>
+struct is_post_event : aux::false_type {};
+template <>
+struct is_post_event<anonymous> : aux::true_type {};
+template <class TEvent>
+struct is_post_event<completion<TEvent>> : aux::true_type {};
 template <class T, class TEvent = T>
 struct on_entry : internal_event, entry_exit {
   constexpr static auto c_str() { return "on_entry"; }
@@ -1401,16 +1407,33 @@ struct transitions_sub<sm<Tsm>, T, Ts...> {
     transitions<T, Ts...>::execute(event, sm, deps, subs, current_state);
     return true;
   }
+  // A fault walking outward is offered to the active sub-machine's exception rows without running its completion and
+  // anonymous steps again, since those may raise the same fault.
+  template <class _, class TException, class SM, class TDeps, class TSubs>
+  constexpr static bool execute_impl(const back::exception<_, TException> &event, SM &sm, TDeps &deps, TSubs &subs,
+                           typename SM::state_t &current_state) {
+    return sub_sm<sm_impl<Tsm>>::get(&subs).process_internal_events(event, deps, subs) ||
+           transitions<T, Ts...>::execute(event, sm, deps, subs, current_state);
+  }
 };
 template <class Tsm>
 struct transitions_sub<sm<Tsm>> {
   template <class TEvent, class SM, class TDeps, class TSubs>
   constexpr static bool execute(const TEvent &event, SM &, TDeps &deps, TSubs &subs, typename SM::state_t &) {
-    return sub_sm<sm_impl<Tsm>>::get(&subs).process_event(event, deps, subs);
+    return execute_impl(event, deps, subs);
   }
   template <class, class SM, class TDeps, class TSubs>
   constexpr static bool execute(const anonymous &, SM &, TDeps &deps, TSubs &subs, typename SM::state_t &) {
     return sub_sm<sm_impl<Tsm>>::get(&subs).process_internal_events(anonymous{}, deps, subs);
+  }
+  template <class TEvent, class TDeps, class TSubs>
+  constexpr static bool execute_impl(const TEvent &event, TDeps &deps, TSubs &subs) {
+    return sub_sm<sm_impl<Tsm>>::get(&subs).process_event(event, deps, subs);
+  }
+  // See transitions_sub<sm<Tsm>, T, Ts...>::execute_impl for exception events.
+  template <class _, class TException, class TDeps, class TSubs>
+  constexpr static bool execute_impl(const back::exception<_, TException> &event, TDeps &deps, TSubs &subs) {
+    return sub_sm<sm_impl<Tsm>>::get(&subs).process_internal_events(event, deps, subs);
   }
 };
 }  // namespace back
@@ -2065,12 +2088,12 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
     return process_event_impl<TMappings>(event, deps, subs, states_t{}, current_state);
   }
   template <class TMappings, class TEvent, class TDeps, class TSubs>
-  bool process_event_except_impl(const TEvent &event, TDeps &deps, TSubs &subs, state_t &current_state,
-                                aux::true_type) noexcept {
+  bool process_event_except_impl(const TEvent &event, TDeps &deps, TSubs &subs, state_t &current_state, aux::true_type) {
     try {
       return process_event_impl<TMappings>(event, deps, subs, states_t{}, current_state);
     } catch (...) {
-      return process_exception(deps, subs, exceptions{});
+      process_exception(deps, subs, exceptions{});
+      return true;
     }
   }
   template <class TMappings, class TEvent, class TDeps, class TSubs>
@@ -2078,22 +2101,48 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
     try {
       return process_event_impl<TMappings>(event, deps, subs, states_t{}, aux::make_index_sequence<regions>{});
     } catch (...) {
-      return process_exception(deps, subs, exceptions{});
+      state_t before[regions];
+      for (auto r = decltype(regions){}; r < regions; ++r) {
+        before[r] = current_state_[r];
+      }
+      process_exception(deps, subs, exceptions{});
+      return recovered<TEvent>(before);
     }
   }
+  // A recovered event is handled. A recovered completion or anonymous step continues stabilizing only when the
+  // exception row moved some region to another state; otherwise the same step would fault again forever.
+  template <class TEvent, __BOOST_SML_REQUIRES(!is_post_event<TEvent>::value)>
+  constexpr bool recovered(const state_t *) const {
+    return true;
+  }
+  template <class TEvent, __BOOST_SML_REQUIRES(is_post_event<TEvent>::value)>
+  constexpr bool recovered(const state_t *before) const {
+    for (auto r = decltype(regions){}; r < regions; ++r) {
+      if (before[r] != current_state_[r]) {
+        return true;
+      }
+    }
+    return false;
+  }
+  // Called inside a catch handler. A fault no exception row of this machine handles is rethrown, so it reaches the
+  // parent machine's exception rows, and finally the caller of process_event.
   template <class TDeps, class TSubs>
-  constexpr bool process_exception(TDeps &deps, TSubs &subs, const aux::type_list<> &) {
-    return process_internal_events(exception<_>{}, deps, subs);
+  void process_exception(TDeps &deps, TSubs &subs, const aux::type_list<> &) {
+    if (!process_internal_events(exception<_>{}, deps, subs)) {
+      throw;
+    }
   }
   template <class TDeps, class TSubs, class E, class... Es>
-  bool process_exception(TDeps &deps, TSubs &subs, const aux::type_list<E, Es...> &) {
+  void process_exception(TDeps &deps, TSubs &subs, const aux::type_list<E, Es...> &) {
     try {
       throw;
     } catch (const typename E::type &e) {
-      return process_internal_events(E{e}, deps, subs);
+      if (process_internal_events(E{e}, deps, subs)) {
+        return;
+      }
     } catch (...) {
-      return process_exception(deps, subs, aux::type_list<Es...>{});
     }
+    process_exception(deps, subs, aux::type_list<Es...>{});
   }
 #endif
   template <class TDeps, class TSubs, class... TEvents>
