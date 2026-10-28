@@ -1884,7 +1884,15 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
 #if !BOOST_SML_DISABLE_EXCEPTIONS
   using exceptions = aux::apply_t<aux::unique_t, aux::apply_t<get_exceptions, events_t>>;
   using has_exceptions = aux::integral_constant<bool, (aux::size<exceptions>::value > 0)>;
+  using settles_regions = aux::integral_constant<bool, (regions > 1) && has_exceptions::value>;
+#else
+  using settles_regions = aux::false_type;
 #endif
+  struct region_settle {
+    bool settled[regions];
+    state_t state[regions];
+  };
+  using settle_t = aux::conditional_t<settles_regions::value, region_settle, no_policy>;
   struct mappings : mappings_t<transitions_t> {};
   template <class TPool>
   constexpr sm_impl(aux::init, const TPool &p) : sm_impl{p, aux::should_not_subclass_statemachine_class<Tsm>{}} {}
@@ -1916,6 +1924,7 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   constexpr bool process_event(const TEvent &event, TDeps &deps, TSubs &subs) {
     const auto lock = thread_safety_.create_lock();
     (void)lock;
+    clear_settled(settle_);
     bool changed = false;
     state_t old = current_state_[0];
     bool handled = process_event_and_post_events<get_event_t<TEvent>>(event, deps, subs);
@@ -1927,6 +1936,12 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
       } while (process_defer_events(deps, subs, changed, aux::type_wrapper<defer_queue_t<TEvent>>{}, events_t{}));
     } while (process_queued_events(deps, subs, queued_handled, aux::type_wrapper<process_queue_t<TEvent>>{}, events_t{}));
     return handled && queued_handled;
+  }
+  static constexpr void clear_settled(no_policy &) {}
+  static constexpr void clear_settled(region_settle &settle) {
+    for (auto r = decltype(regions){}; r < regions; ++r) {
+      settle.settled[r] = false;
+    }
   }
   template <class TOriginEvent, class TDeps, class TSubs>
   constexpr bool process_completion_event(const TOriginEvent &event, TDeps &deps, TSubs &subs, aux::true_type) {
@@ -2098,6 +2113,42 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   }
   template <class TMappings, class TEvent, class TDeps, class TSubs>
   bool process_event_except_impl(const TEvent &event, TDeps &deps, TSubs &subs, aux::true_type) {
+    return process_event_except_regions<TMappings>(
+        event, deps, subs, aux::integral_constant<bool, settles_regions::value && is_post_event<TEvent>::value>{});
+  }
+  // With orthogonal regions, each region runs a completion or anonymous step under its own fault handling. A recovery
+  // that does not move settles only the faulting region, until its state changes or this machine gets another event,
+  // so peer regions keep stabilizing.
+  template <class TMappings, class TEvent, class TDeps, class TSubs>
+  bool process_event_except_regions(const TEvent &event, TDeps &deps, TSubs &subs, aux::true_type) {
+    auto handled = false;
+    for (auto r = decltype(regions){}; r < regions; ++r) {
+      if (!(settle_.settled[r] && settle_.state[r] == current_state_[r])) {
+        handled |= process_event_except_region<TMappings>(event, deps, subs, r);
+      }
+    }
+    return handled;
+  }
+  template <class TMappings, class TEvent, class TDeps, class TSubs>
+  bool process_event_except_region(const TEvent &event, TDeps &deps, TSubs &subs, decltype(regions) region) {
+    try {
+      return process_event_impl<TMappings>(event, deps, subs, states_t{}, current_state_[region]);
+    } catch (...) {
+      state_t before[regions];
+      for (auto r = decltype(regions){}; r < regions; ++r) {
+        before[r] = current_state_[r];
+      }
+      process_exception(deps, subs, exceptions{});
+      if (recovered<TEvent>(before)) {
+        return true;
+      }
+      settle_.settled[region] = true;
+      settle_.state[region] = current_state_[region];
+      return false;
+    }
+  }
+  template <class TMappings, class TEvent, class TDeps, class TSubs>
+  bool process_event_except_regions(const TEvent &event, TDeps &deps, TSubs &subs, aux::false_type) {
     try {
       return process_event_impl<TMappings>(event, deps, subs, states_t{}, aux::make_index_sequence<regions>{});
     } catch (...) {
@@ -2266,6 +2317,7 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   }
   transitions_t transitions_{};
   state_t current_state_[regions]{};
+  settle_t settle_{};
   thread_safety_t thread_safety_{};
   defer_t defer_{};
   process_t process_{};
