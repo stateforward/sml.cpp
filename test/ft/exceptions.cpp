@@ -393,12 +393,14 @@ struct faults {
 };
 
 // The anonymous transition's guard throws, so the machine stays in idle and the same step would fault again.
+// clang-format off
 auto faulting_guard = [](faults& f) -> bool {
   if (++f.attempts > 8) {
     return false;
   }
   throw exception1{};
 };
+// clang-format on
 
 test exception_internal_row_ends_faulting_anonymous_step_at_start = [] {
   struct c {
