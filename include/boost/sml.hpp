@@ -2222,24 +2222,27 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
           &sm_impl::process_event_no_defer<TDeps, TSubs, TEvents>...};
       struct defer_guard {
         sm_impl &sm;
-        bool in_dispatch;
         ~defer_guard() {
           sm.defer_processing_ = false;
           sm.defer_again_ = false;
-          if (in_dispatch) {
-            sm.defer_.erase(sm.defer_it_);
-          }
         }
-      } guard{*this, false};
+      } guard{*this};
       defer_processing_ = true;
       defer_again_ = false;
       defer_it_ = defer_.begin();
       defer_end_ = defer_.end();
       state_t old = current_state_[0];
       while (defer_it_ != defer_end_) {
-        guard.in_dispatch = true;
-        processed_events |= (this->*dispatch_table[defer_it_->id])(deps, subs, defer_it_->data);
-        guard.in_dispatch = false;
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+        try {
+#endif
+          processed_events |= (this->*dispatch_table[defer_it_->id])(deps, subs, defer_it_->data);
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+        } catch (...) {
+          defer_.erase(defer_it_);  // outside a destructor, so a throwing event move propagates instead of terminating
+          throw;
+        }
+#endif
         defer_again_ = false;
         if (old != current_state_[0]) {
           defer_it_ = defer_.begin();
