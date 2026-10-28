@@ -1884,15 +1884,15 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
 #if !BOOST_SML_DISABLE_EXCEPTIONS
   using exceptions = aux::apply_t<aux::unique_t, aux::apply_t<get_exceptions, events_t>>;
   using has_exceptions = aux::integral_constant<bool, (aux::size<exceptions>::value > 0)>;
-  using settles_regions = aux::integral_constant<bool, (regions > 1) && has_exceptions::value>;
+  using settles_faults = has_exceptions;
 #else
-  using settles_regions = aux::false_type;
+  using settles_faults = aux::false_type;
 #endif
   struct region_settle {
     bool settled[regions];
     state_t state[regions];
   };
-  using settle_t = aux::conditional_t<settles_regions::value, region_settle, no_policy>;
+  using settle_t = aux::conditional_t<settles_faults::value, region_settle, no_policy>;
   struct mappings : mappings_t<transitions_t> {};
   template <class TPool>
   constexpr sm_impl(aux::init, const TPool &p) : sm_impl{p, aux::should_not_subclass_statemachine_class<Tsm>{}} {}
@@ -1924,7 +1924,6 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   constexpr bool process_event(const TEvent &event, TDeps &deps, TSubs &subs) {
     const auto lock = thread_safety_.create_lock();
     (void)lock;
-    clear_settled(settle_);
     bool changed = false;
     state_t old = current_state_[0];
     bool handled = process_event_and_post_events<get_event_t<TEvent>>(event, deps, subs);
@@ -1964,6 +1963,7 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   }
   template <class TOriginEvent, class TEvent, class TDeps, class TSubs>
   constexpr bool process_event_and_post_events(const TEvent &event, TDeps &deps, TSubs &subs) {
+    clear_settled(settle_);
     const bool handled = process_internal_events(event, deps, subs);
     process_post_events<TOriginEvent>(get_origin_event(event), deps, subs);
     return handled;
@@ -2114,11 +2114,11 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   template <class TMappings, class TEvent, class TDeps, class TSubs>
   bool process_event_except_impl(const TEvent &event, TDeps &deps, TSubs &subs, aux::true_type) {
     return process_event_except_regions<TMappings>(
-        event, deps, subs, aux::integral_constant<bool, settles_regions::value && is_post_event<TEvent>::value>{});
+        event, deps, subs, aux::integral_constant<bool, settles_faults::value && is_post_event<TEvent>::value>{});
   }
-  // With orthogonal regions, each region runs a completion or anonymous step under its own fault handling. A recovery
-  // that does not move settles only the faulting region, until its state changes or this machine gets another event,
-  // so peer regions keep stabilizing.
+  // Each region runs a completion or anonymous step under its own fault handling. A recovery that does not move settles
+  // only the faulting region, until its state changes or the next event's run to completion starts, so peer regions keep
+  // stabilizing and a machine with one region stops.
   template <class TMappings, class TEvent, class TDeps, class TSubs>
   bool process_event_except_regions(const TEvent &event, TDeps &deps, TSubs &subs, aux::true_type) {
     auto handled = false;

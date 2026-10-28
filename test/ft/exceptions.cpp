@@ -783,6 +783,81 @@ test exception_no_progress_recovery_lets_peer_child_region_finish = [] {
   expect(sm.is(left_spinning, right_done));
 };
 
+test exception_no_progress_completion_fault_skips_anonymous_step = [] {
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         *idle + event<e1> = s1
+        , s1 + completion<e1> [ faulting_guard ] = error
+        , s1 = s2
+        , s1 + exception<exception1> / [](faults &f) { ++f.recoveries; }
+      );
+      // clang-format on
+    }
+  };
+
+  faults f{};
+  sml::sm<c> sm{f};
+  expect(sm.process_event(e1{}));
+  expect(1 == f.attempts);
+  expect(1 == f.recoveries);
+  expect(sm.is(s1));
+};
+
+test exception_settled_region_stabilizes_again_for_queued_event = [] {
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         *left_idle + event<e1> = left_spinning
+        , left_spinning [ ([](peer_faults &f) { return faulting_guard(f.left); }) ] = left_idle
+        , left_spinning + exception<exception1> / [](peer_faults &f) { ++f.left.recoveries; }
+
+        , *right_idle + event<e1> / process(e2{}) = right_one
+        , right_one + event<e2> = right_done
+      );
+      // clang-format on
+    }
+  };
+
+  peer_faults f{};
+  sml::sm<c, sml::process_queue<std::queue>> sm{f};
+  expect(sm.process_event(e1{}));
+  expect(2 == f.left.attempts);
+  expect(2 == f.left.recoveries);
+  expect(sm.is(left_spinning, right_done));
+};
+
+test exception_settled_region_stabilizes_again_for_deferred_event = [] {
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         *left_idle + event<e1> = left_spinning
+        , left_spinning [ ([](peer_faults &f) { return faulting_guard(f.left); }) ] = left_idle
+        , left_spinning + exception<exception1> / [](peer_faults &f) { ++f.left.recoveries; }
+
+        , *right_idle + event<e2> / defer
+        , right_idle + event<e1> = right_one
+        , right_one + event<e2> = right_done
+      );
+      // clang-format on
+    }
+  };
+
+  peer_faults f{};
+  sml::sm<c, sml::defer_queue<std::deque>> sm{f};
+  expect(sm.process_event(e2{}));
+  expect(sm.process_event(e1{}));
+  expect(2 == f.left.attempts);
+  expect(2 == f.left.recoveries);
+  expect(sm.is(left_spinning, right_done));
+};
+
 test exception_escaping_deferred_event_keeps_defer_queue_consistent = [] {
   struct e4 {};
   struct c {
