@@ -2220,20 +2220,35 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
       using dispatch_table_t = bool (sm_impl::*)(TDeps &, TSubs &, const void *);
       const static dispatch_table_t dispatch_table[__BOOST_SML_ZERO_SIZE_ARRAY_CREATE(sizeof...(TEvents))] = {
           &sm_impl::process_event_no_defer<TDeps, TSubs, TEvents>...};
+      struct defer_guard {
+        sm_impl &sm;
+        ~defer_guard() {
+          sm.defer_processing_ = false;
+          sm.defer_again_ = false;
+        }
+      } guard{*this};
       defer_processing_ = true;
       defer_again_ = false;
       defer_it_ = defer_.begin();
       defer_end_ = defer_.end();
       state_t old = current_state_[0];
       while (defer_it_ != defer_end_) {
-        processed_events |= (this->*dispatch_table[defer_it_->id])(deps, subs, defer_it_->data);
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+        try {
+#endif
+          processed_events |= (this->*dispatch_table[defer_it_->id])(deps, subs, defer_it_->data);
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+        } catch (...) {
+          defer_.erase(defer_it_);  // outside a destructor, so a throwing event move propagates instead of terminating
+          throw;
+        }
+#endif
         defer_again_ = false;
         if (old != current_state_[0]) {
           defer_it_ = defer_.begin();
           old = current_state_[0];
         }
       }
-      defer_processing_ = false;
     }
     return processed_events;
   }
@@ -2252,9 +2267,13 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
     const static dispatch_table_t dispatch_table[__BOOST_SML_ZERO_SIZE_ARRAY_CREATE(sizeof...(TEvents))] = {
         &sm_impl::process_event_no_queue<TDeps, TSubs, TEvents>...};
     bool wasnt_empty = !process_.empty();
+    struct pop_guard {
+      process_t &process;
+      ~pop_guard() { process.pop(); }
+    };
     while (!process_.empty()) {
+      const pop_guard guard{process_};
       queued_handled &= (this->*dispatch_table[process_.front().id])(deps, subs, process_.front().data);
-      process_.pop();
     }
     return wasnt_empty;
   }

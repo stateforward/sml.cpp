@@ -858,4 +858,85 @@ test exception_settled_region_stabilizes_again_for_deferred_event = [] {
   expect(sm.is(left_spinning, right_done));
 };
 
+test exception_escaping_deferred_event_keeps_defer_queue_consistent = [] {
+  struct e4 {};
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         *idle + event<e1> / defer
+        , idle + event<e2> = s1
+        , s1 + event<e1> / [] { throw exception1{}; }
+        , s1 + event<e3> / defer
+        , s1 + event<e4> = error
+        , error + event<e3> = X
+      );
+      // clang-format on
+    }
+  };
+
+  sml::sm<c, sml::defer_queue<std::deque>> sm{};
+  sm.process_event(e1{});
+  auto escaped = false;
+  try {
+    sm.process_event(e2{});  // replays the deferred e1, which throws exception1
+    // clang-format off
+  } catch (const exception1&) {
+    // clang-format on
+    escaped = true;
+  }
+  expect(escaped);
+  expect(sm.is(s1));
+
+  auto rethrown = false;
+  try {
+    sm.process_event(e3{});  // deferred, not dropped
+    sm.process_event(e4{});  // replays e3 only; the faulted e1 is gone
+    // clang-format off
+  } catch (const exception1&) {
+    // clang-format on
+    rethrown = true;
+  }
+  expect(!rethrown);
+  expect(sm.is(sml::X));
+};
+
+test exception_escaping_queued_event_is_popped = [] {
+  struct c {
+    auto operator()() const {
+      using namespace sml;
+      // clang-format off
+      return make_transition_table(
+         *idle + event<e1> / process(e2{})
+        , idle + event<e2> / [] { throw exception1{}; }
+        , idle + event<e3> = X
+      );
+      // clang-format on
+    }
+  };
+
+  sml::sm<c, sml::process_queue<std::queue>> sm{};
+  auto escaped = false;
+  try {
+    sm.process_event(e1{});  // dispatches the queued e2, which throws exception1
+    // clang-format off
+  } catch (const exception1&) {
+    // clang-format on
+    escaped = true;
+  }
+  expect(escaped);
+
+  auto rethrown = false;
+  try {
+    expect(sm.process_event(e3{}));  // must not dispatch the faulted e2 again
+    // clang-format off
+  } catch (const exception1&) {
+    // clang-format on
+    rethrown = true;
+  }
+  expect(!rethrown);
+  expect(sm.is(sml::X));
+};
+
 #endif
