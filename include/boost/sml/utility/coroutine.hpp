@@ -777,10 +777,10 @@ struct async_dispatch {
 
   template <class TSM>
   static decltype(auto) allocator_of(TSM& sm) noexcept {
-    if constexpr (requires { sm.allocator(); }) {
-      static_assert(utility::policy::valid_coroutine_allocator<std::remove_reference_t<decltype(sm.allocator())>>,
+    if constexpr (requires { sm.allocator_; }) {
+      static_assert(utility::policy::valid_coroutine_allocator<std::remove_reference_t<decltype(sm.allocator_)>>,
                     "allocator must provide allocate(size, alignment) and noexcept deallocate(ptr, size, alignment)");
-      return (sm.allocator());
+      return (sm.allocator_);
     } else {
       static utility::policy::heap_coroutine_allocator heap{};
       return (heap);

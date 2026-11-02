@@ -154,7 +154,6 @@ if (task.await_ready()) {
 }
 
 sm.scheduler();  // the stored scheduler instance
-sm.allocator();  // the stored allocator instance
 
 // Thread-pool dispatch starts work on a worker and lets the caller await later.
 using pool_scheduler = utility::policy::thread_pool_scheduler<4>;

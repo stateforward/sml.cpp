@@ -160,9 +160,15 @@ struct scheduler_without_try_run_immediate {
   }
 };
 
+// Counters are static: sm keeps its allocator private, so tests observe it from outside.
 struct counting_allocator {
-  std::size_t allocate_calls = 0;
-  std::size_t deallocate_calls = 0;
+  static inline std::size_t allocate_calls = 0;
+  static inline std::size_t deallocate_calls = 0;
+
+  static void reset() noexcept {
+    allocate_calls = 0;
+    deallocate_calls = 0;
+  }
 
   void* allocate(const std::size_t size, const std::size_t alignment) {
     ++allocate_calls;
@@ -177,6 +183,7 @@ struct counting_allocator {
 };
 
 test sm_coroutine_path_uses_allocator = [] {
+  counting_allocator::reset();
   using sm_t = sml::sm<c, sml::scheduler<scheduler_without_try_run_immediate>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
@@ -186,12 +193,13 @@ test sm_coroutine_path_uses_allocator = [] {
     expect(task.result());
   }
 
-  expect(1u == sm.allocator().allocate_calls);
-  expect(1u == sm.allocator().deallocate_calls);
+  expect(1u == counting_allocator::allocate_calls);
+  expect(1u == counting_allocator::deallocate_calls);
   expect(sm.is(s1));
 };
 
 test sm_default_fifo_try_run_immediate_path = [] {
+  counting_allocator::reset();
   using sm_t = sml::sm<c, sml::scheduler<utility::policy::fifo_scheduler<8, 64>>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
@@ -199,8 +207,8 @@ test sm_default_fifo_try_run_immediate_path = [] {
 
   expect(task.await_ready());
   expect(task.result());
-  expect(0u == sm.allocator().allocate_calls);
-  expect(0u == sm.allocator().deallocate_calls);
+  expect(0u == counting_allocator::allocate_calls);
+  expect(0u == counting_allocator::deallocate_calls);
   expect(sm.is(s1));
 };
 

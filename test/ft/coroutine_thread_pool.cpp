@@ -97,10 +97,11 @@ utility::bool_task await_then_dispatch_again(simple_sm& sm, utility::bool_task& 
   co_return first_accepted&& second_accepted;
 }
 
+// Counters are static: sm keeps its allocator private, so tests observe it from outside.
 struct fixed_allocator {
-  std::size_t allocate_calls = 0;
-  std::size_t deallocate_calls = 0;
-  bool heap_used = false;
+  static inline std::size_t allocate_calls = 0;
+  static inline std::size_t deallocate_calls = 0;
+  static inline bool heap_used = false;
   bool used = false;
   alignas(std::max_align_t) unsigned char storage[4096]{};
 
@@ -326,9 +327,9 @@ test thread_pool_coroutine_fixed_allocator_avoids_heap_fallback = [] {
     expect(task.result());
   }
 
-  expect(1u == sm.allocator().allocate_calls);
-  expect(1u == sm.allocator().deallocate_calls);
-  expect(!sm.allocator().heap_used);
+  expect(1u == fixed_allocator::allocate_calls);
+  expect(1u == fixed_allocator::deallocate_calls);
+  expect(!fixed_allocator::heap_used);
   expect(1 == calls.load(std::memory_order_acquire));
 };
 

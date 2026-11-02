@@ -2307,14 +2307,6 @@ class sm : sm_scheduling<typename Tsm::scheduler_policy::type, typename Tsm::all
   constexpr const T &scheduler() const noexcept {
     return this->scheduler_;
   }
-  template <class T = allocator_t, __BOOST_SML_REQUIRES(!aux::is_same<no_policy, T>::value)>
-  constexpr T &allocator() noexcept {
-    return this->allocator_;
-  }
-  template <class T = allocator_t, __BOOST_SML_REQUIRES(!aux::is_same<no_policy, T>::value)>
-  constexpr const T &allocator() const noexcept {
-    return this->allocator_;
-  }
   template <class T = aux::identity<sm_t>, class TVisitor, __BOOST_SML_REQUIRES(concepts::callable<void, TVisitor>::value)>
   constexpr void visit_current_states(const TVisitor &visitor) const {
     using type = typename T::type;

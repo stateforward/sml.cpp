@@ -9,7 +9,7 @@
     - `thread_pool_scheduler` and `external_completion_scheduler` plug in via `sml::scheduler<T>`; tests and benchmark renamed to `coroutine_thread_pool` / `thread_pool_coroutine`
 
 - **Additions**
-    - `sml::scheduler<T>` / `sml::allocator<T>` policies with `sm.scheduler()` / `sm.allocator()` accessors
+    - `sml::scheduler<T>` / `sml::allocator<T>` policies with an `sm.scheduler()` accessor (the allocator stays private)
 
 - **Bug Fixes**
     - `bool_task` released the async dispatch guard after publishing completion, so re-dispatching to the same machine right after `await_ready()` could be rejected
