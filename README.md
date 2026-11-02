@@ -28,7 +28,7 @@ This fork addresses critical bugs, adds utilities for high-throughput and async 
 ### New features
 
 - **Completion transitions** (`completion<T>`) -- post-event transitions with origin event propagation
-- **Coroutine state machines** (`co_sm`) -- C++20 coroutine-driven SM with configurable scheduler and allocator policies
+- **Coroutine dispatch** (`sml::scheduler<T>` / `sml::allocator<T>`) -- C++20 `process_event_async` on `sm` with configurable scheduler and allocator
 - **`sm_pool`** -- pool-based container for managing thousands of SM instances with indexed and batch dispatch
 - **`dispatch_table`** -- compile-time dispatch table for ID-based event routing at zero runtime overhead
 
@@ -125,38 +125,42 @@ cl /std:c++14 /Ox /W3 tcp_release.cpp
 
 ## Utilities
 
-### co_sm (C++20)
+### Coroutine dispatch (C++20)
 
-Coroutine-driven state machine wrapper with configurable scheduling and allocation policies. Requires C++20 with coroutine support.
+Give `sm` a `sml::scheduler<T>` policy (and optionally `sml::allocator<T>`) and include the coroutine utility header to get `process_event_async`. Requires C++20 with coroutine support; `sml.hpp` itself stays C++14.
 
 ```cpp
-#include <stateforward/sml/utility/co_sm.hpp>
+#include <stateforward/sml/utility/coroutine.hpp>
 
 namespace utility = sml::utility;
 
-// Default: inline scheduler, pooled coroutine allocator
-utility::co_sm<my_fsm> sm{};
+sml::sm<my_fsm,
+        sml::scheduler<utility::policy::fifo_scheduler<>>,
+        sml::allocator<utility::policy::pooled_coroutine_allocator<>>> sm{};
 
-// Synchronous dispatch (same as regular sm)
+// Synchronous dispatch (unchanged)
 sm.process_event(my_event{});
 
 // Asynchronous dispatch via coroutine
 auto task = sm.process_event_async(my_event{});
 bool accepted = task.result();
+
+sm.scheduler();  // the stored scheduler instance
+sm.allocator();  // the stored allocator instance
 ```
 
-**Scheduler policies:**
+**Schedulers** (`sml::scheduler<T>`; any `T` with `schedule(fn)` and the FIFO / single-consumer / run-to-completion flags):
 
-| Policy | Description |
+| Scheduler | Description |
 |--------|-------------|
-| `inline_scheduler` | Runs tasks immediately (default) |
+| `inline_scheduler` | Runs tasks immediately, no coroutine frame |
 | `fifo_scheduler<Capacity, InlineBytes>` | FIFO queue with bounded inline storage |
-| `coroutine_scheduler<TScheduler>` | Wraps any scheduler for the coroutine path |
 
-**Allocator policies:**
+**Allocators** (`sml::allocator<T>`; optional, coroutine frames use the heap without one):
 
-| Policy | Description |
+| Allocator | Description |
 |--------|-------------|
+| `heap_coroutine_allocator` | Aligned `operator new` / `delete` |
 | `pooled_coroutine_allocator<Size, Count>` | Fixed-size pool with heap fallback |
 
 ### sm_pool
@@ -376,7 +380,7 @@ ctest --test-dir build
 | `SML_BUILD_EXAMPLES` | OFF | Build example targets |
 | `SML_BUILD_TESTS` | OFF | Build test targets |
 
-**Supported compilers:** GCC 6+, Clang 3.5+, MSVC 2015+. Requires C++14 minimum (C++20 for `co_sm`).
+**Supported compilers:** GCC 6+, Clang 3.5+, MSVC 2015+. Requires C++14 minimum (C++20 for `process_event_async`).
 
 ---
 

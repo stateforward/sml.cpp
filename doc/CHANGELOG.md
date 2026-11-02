@@ -1,3 +1,13 @@
+## [2.0.0] - 2026-11-01
+- **Breaking Changes**
+    - Removed `utility::co_sm`; use `sml::sm<T, sml::scheduler<S>, sml::allocator<A>>` and `sm.process_event_async(event)`
+    - Removed `utility::policy::coroutine_scheduler` / `coroutine_allocator`; schedulers and allocators plug into `sml::scheduler<T>` / `sml::allocator<T>` directly
+    - Renamed `sml/utility/co_sm.hpp` to `sml/utility/coroutine.hpp`
+    - Coroutine frames use the heap unless an `sml::allocator<T>` policy is given (`co_sm` defaulted to `fifo_scheduler` + `pooled_coroutine_allocator`)
+
+- **Additions**
+    - `sml::scheduler<T>` / `sml::allocator<T>` policies with `sm.scheduler()` / `sm.allocator()` accessors
+
 ## [1.1.13] - 2025-12-01
 - Changes
     - https://github.com/boost-ext/sml/compare/v1.1.12...v1.1.13

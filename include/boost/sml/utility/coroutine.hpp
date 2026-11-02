@@ -5,24 +5,24 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#ifndef BOOST_SML_UTILITY_CO_SM_HPP
-#define BOOST_SML_UTILITY_CO_SM_HPP
+#ifndef BOOST_SML_UTILITY_COROUTINE_HPP
+#define BOOST_SML_UTILITY_COROUTINE_HPP
 
 #include "boost/sml.hpp"
 
 #if defined(_MSVC_LANG)
-#define BOOST_SML_UTILITY_CO_SM_LANG _MSVC_LANG
+#define BOOST_SML_UTILITY_COROUTINE_LANG _MSVC_LANG
 #else
-#define BOOST_SML_UTILITY_CO_SM_LANG __cplusplus
+#define BOOST_SML_UTILITY_COROUTINE_LANG __cplusplus
 #endif
 
-#if BOOST_SML_UTILITY_CO_SM_LANG >= 202002L && (defined(__cpp_impl_coroutine) || defined(__cpp_coroutines))
-#define BOOST_SML_UTILITY_CO_SM_ENABLED 1
+#if BOOST_SML_UTILITY_COROUTINE_LANG >= 202002L && (defined(__cpp_impl_coroutine) || defined(__cpp_coroutines))
+#define BOOST_SML_UTILITY_COROUTINE_ENABLED 1
 #else
-#define BOOST_SML_UTILITY_CO_SM_ENABLED 0
+#define BOOST_SML_UTILITY_COROUTINE_ENABLED 0
 #endif
 
-#if BOOST_SML_UTILITY_CO_SM_ENABLED
+#if BOOST_SML_UTILITY_COROUTINE_ENABLED
 #include <array>
 #include <concepts>
 #include <coroutine>
@@ -187,11 +187,6 @@ class fifo_scheduler {
   bool draining_ = false;
 };
 
-template <class TScheduler>
-struct coroutine_scheduler {
-  using scheduler_type = TScheduler;
-};
-
 struct heap_coroutine_allocator {
   void* allocate(const std::size_t size, const std::size_t alignment) {
     return ::operator new(size, std::align_val_t(alignment));
@@ -276,14 +271,6 @@ class pooled_coroutine_allocator {
   std::size_t free_head_ = 0;
 };
 
-template <class TAllocator>
-struct coroutine_allocator {
-  using allocator_type = TAllocator;
-};
-
-template <class TSchedulerPolicy>
-concept valid_coroutine_scheduler_policy = requires { typename TSchedulerPolicy::scheduler_type; };
-
 template <class TScheduler>
 concept valid_coroutine_scheduler = requires(TScheduler scheduler, void (*fn_ptr)()) { scheduler.schedule(fn_ptr); };
 
@@ -302,9 +289,6 @@ concept has_try_run_immediate = requires(TScheduler scheduler) {
     scheduler.try_run_immediate(+[]() noexcept {})
   } -> std::same_as<bool>;
 };
-
-template <class TAllocatorPolicy>
-concept valid_coroutine_allocator_policy = requires { typename TAllocatorPolicy::allocator_type; };
 
 template <class TAllocator>
 concept valid_coroutine_allocator = requires(TAllocator allocator, void* ptr, std::size_t size, std::size_t alignment) {
@@ -528,130 +512,67 @@ class bool_task {
   bool immediate_value_ = false;
 };
 
-template <class T, class TSchedulerPolicy = policy::coroutine_scheduler<policy::fifo_scheduler<>>,
-          class TAllocatorPolicy = policy::coroutine_allocator<policy::pooled_coroutine_allocator<>>, class... TPolicies>
-class co_sm {
- public:
-  static_assert(policy::valid_coroutine_scheduler_policy<TSchedulerPolicy>, "scheduler_policy must define scheduler_type");
-  static_assert(policy::valid_coroutine_allocator_policy<TAllocatorPolicy>, "allocator_policy must define allocator_type");
+}  // namespace utility
 
-  using model_type = T;
-  using scheduler_policy_type = TSchedulerPolicy;
-  using scheduler_type = typename scheduler_policy_type::scheduler_type;
-  using allocator_policy_type = TAllocatorPolicy;
-  using allocator_type = typename allocator_policy_type::allocator_type;
-  using state_machine_type = sm<T, TPolicies...>;
+namespace back {
 
-  static_assert(policy::valid_coroutine_scheduler<scheduler_type>, "scheduler_type must provide schedule(fn)");
-  static_assert(policy::strict_ordering_scheduler_contract<scheduler_type>,
-                "scheduler_type must guarantee FIFO ordering, single-consumer dispatch, and run-to-completion");
-  static_assert(policy::valid_coroutine_allocator<allocator_type>,
-                "allocator_type must provide allocate(size, alignment) and noexcept deallocate(ptr, size, alignment)");
+template <class TScheduler>
+struct async_dispatch {
+  static_assert(utility::policy::valid_coroutine_scheduler<TScheduler>, "scheduler must provide schedule(fn)");
+  static_assert(utility::policy::strict_ordering_scheduler_contract<TScheduler>,
+                "scheduler must guarantee FIFO ordering, single-consumer dispatch, and run-to-completion");
 
-  co_sm() = default;
-  ~co_sm() = default;
-
-  co_sm(const co_sm&) = default;
-  co_sm(co_sm&&) = default;
-  co_sm& operator=(const co_sm&) = default;
-  co_sm& operator=(co_sm&&) = default;
-
-  explicit co_sm(const scheduler_type& scheduler) : scheduler_(scheduler) {}
-  explicit co_sm(const allocator_type& allocator) : allocator_(allocator) {}
-
-  co_sm(const scheduler_type& scheduler, const allocator_type& allocator) : scheduler_(scheduler), allocator_(allocator) {}
-
-  template <class... TArgs>
-  explicit co_sm(TArgs&&... args) : state_machine_(std::forward<TArgs>(args)...) {}
-
-  template <class... TArgs>
-  co_sm(const scheduler_type& scheduler, TArgs&&... args)
-      : state_machine_(std::forward<TArgs>(args)...), scheduler_(scheduler) {}
-
-  template <class... TArgs>
-  co_sm(const allocator_type& allocator, TArgs&&... args)
-      : state_machine_(std::forward<TArgs>(args)...), allocator_(allocator) {}
-
-  template <class... TArgs>
-  co_sm(const scheduler_type& scheduler, const allocator_type& allocator, TArgs&&... args)
-      : state_machine_(std::forward<TArgs>(args)...), scheduler_(scheduler), allocator_(allocator) {}
-
-  template <class TEvent>
-  bool process_event(const TEvent& event) {
-    return state_machine_.process_event(event);
-  }
-
-  template <class TEvent>
-  bool_task process_event_async(TEvent&& event) {
+  template <class TSM, class TEvent>
+  static utility::bool_task process_event_async(TSM& sm, TEvent&& event) {
     using event_t = typename std::decay<TEvent>::type;
     event_t event_copy(static_cast<TEvent&&>(event));
 
-    if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
-      return bool_task::from_value(state_machine_.process_event(event_copy));
-    }
+    if constexpr (std::is_same_v<TScheduler, utility::policy::inline_scheduler>) {
+      return utility::bool_task::from_value(sm.process_event(event_copy));
+    } else {
+      if constexpr (utility::policy::has_try_run_immediate<TScheduler>) {
+        bool accepted = false;
+        if (sm.scheduler().try_run_immediate([&sm, &event_copy, &accepted]() { accepted = sm.process_event(event_copy); })) {
+          return utility::bool_task::from_value(accepted);
+        }
+      }
 
-    if constexpr (policy::has_try_run_immediate<scheduler_type>) {
-      bool accepted = false;
-      if (scheduler_.try_run_immediate(
-              [this, &event_copy, &accepted]() { accepted = state_machine_.process_event(event_copy); })) {
-        return bool_task::from_value(accepted);
+      if constexpr (requires { sm.allocator(); }) {
+        static_assert(utility::policy::valid_coroutine_allocator<std::decay_t<decltype(sm.allocator())>>,
+                      "allocator must provide allocate(size, alignment) and noexcept deallocate(ptr, size, alignment)");
+        return process_event_async_impl(std::allocator_arg, sm.allocator(), sm, static_cast<event_t&&>(event_copy));
+      } else {
+        static utility::policy::heap_coroutine_allocator heap{};
+        return process_event_async_impl(std::allocator_arg, heap, sm, static_cast<event_t&&>(event_copy));
       }
     }
-
-    return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
   }
-
-  template <class TState>
-  bool is(const TState& state = TState{}) const {
-    return state_machine_.is(state);
-  }
-
-  template <class TVisitor>
-  void visit_current_states(TVisitor&& visitor) {
-    state_machine_.visit_current_states(std::forward<TVisitor>(visitor));
-  }
-
-  scheduler_type& scheduler() noexcept { return scheduler_; }
-  const scheduler_type& scheduler() const noexcept { return scheduler_; }
-  allocator_type& allocator() noexcept { return allocator_; }
-  const allocator_type& allocator() const noexcept { return allocator_; }
-
- protected:
-  state_machine_type& raw_sm() { return state_machine_; }
-  const state_machine_type& raw_sm() const { return state_machine_; }
 
  private:
-  template <class TEvent>
-  static bool_task process_event_async_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self, TEvent&& event) {
-    (void)allocator;
-    co_return co_await process_event_awaitable<typename std::decay<TEvent>::type>{self, static_cast<TEvent&&>(event)};
+  template <class TAllocator, class TSM, class TEvent>
+  static utility::bool_task process_event_async_impl(std::allocator_arg_t, TAllocator&, TSM& sm, TEvent event) {
+    co_return co_await process_event_awaitable<TSM, TEvent>{sm, static_cast<TEvent&&>(event)};
   }  // GCOVR_EXCL_LINE
 
-  template <class TEvent>
+  template <class TSM, class TEvent>
   struct process_event_awaitable {
-    co_sm& self;
+    TSM& sm;
     TEvent event_value;
     bool accepted = false;
     std::exception_ptr exception{};
 
-    bool await_ready() noexcept {
-      if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
-        accepted = self.state_machine_.process_event(event_value);
-        return true;
-      }
-      return false;
-    }
+    bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) {
-      self.scheduler_.schedule([this, handle]() mutable {
+      sm.scheduler().schedule([this, handle]() mutable {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
         try {
-          accepted = self.state_machine_.process_event(event_value);
+          accepted = sm.process_event(event_value);
         } catch (...) {
           exception = std::current_exception();
         }
 #else
-        accepted = self.state_machine_.process_event(event_value);
+        accepted = sm.process_event(event_value);
 #endif
         handle.resume();
       });
@@ -666,17 +587,13 @@ class co_sm {
       return accepted;
     }
   };
-
-  state_machine_type state_machine_{};
-  scheduler_type scheduler_{};
-  allocator_type allocator_{};
 };
 
-}  // namespace utility
+}  // namespace back
 
 BOOST_SML_NAMESPACE_END
 #endif
 
-#undef BOOST_SML_UTILITY_CO_SM_LANG
+#undef BOOST_SML_UTILITY_COROUTINE_LANG
 
-#endif  // BOOST_SML_UTILITY_CO_SM_HPP
+#endif  // BOOST_SML_UTILITY_COROUTINE_HPP

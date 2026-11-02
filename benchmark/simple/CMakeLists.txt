@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD ${CURRENT_CXX_STANDARD})
 add_example(simple_sc benchmark_simple_sc sc.cpp)
 
 if (NOT IS_MSVC_2015)
-  add_example(simple_co_sm benchmark_simple_co_sm co_sm.cpp)
+  add_example(simple_coroutine benchmark_simple_coroutine coroutine.cpp)
 
   if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sml_player_sm.hpp")
     add_example(simple_sml benchmark_simple_sml sml.cpp)
