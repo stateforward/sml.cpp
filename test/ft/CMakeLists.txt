@@ -19,6 +19,19 @@ add_test(test_composite test_composite)
 add_executable(test_coroutine coroutine.cpp)
 add_test(test_coroutine test_coroutine)
 
+add_executable(test_thread_pool_scheduler thread_pool_scheduler.cpp)
+add_test(test_thread_pool_scheduler test_thread_pool_scheduler)
+target_link_libraries(test_thread_pool_scheduler -lpthread)
+
+add_executable(test_coroutine_thread_pool coroutine_thread_pool.cpp)
+add_test(test_coroutine_thread_pool test_coroutine_thread_pool)
+find_package(Threads REQUIRED)
+target_link_libraries(test_coroutine_thread_pool PRIVATE Threads::Threads)
+
+add_executable(test_external_completion external_completion.cpp)
+add_test(test_external_completion test_external_completion)
+target_link_libraries(test_external_completion -lpthread)
+
 add_executable(test_constexpr constexpr.cpp)
 add_test(test_constexpr test_constexpr)
 

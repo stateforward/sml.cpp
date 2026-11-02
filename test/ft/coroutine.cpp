@@ -138,8 +138,7 @@ test sm_inline_scheduler_path = [] {
 };
 
 test sm_scheduler_policy_sync_process_event_and_visitor = [] {
-  sml::sm<c, sml::scheduler<utility::policy::fifo_scheduler<>>,
-          sml::allocator<utility::policy::pooled_coroutine_allocator<>>>
+  sml::sm<c, sml::scheduler<utility::policy::fifo_scheduler<>>, sml::allocator<utility::policy::pooled_coroutine_allocator<>>>
       sm{};
   expect(sm.is(idle));
   expect(sm.process_event(e1{}));
@@ -178,8 +177,7 @@ struct counting_allocator {
 };
 
 test sm_coroutine_path_uses_allocator = [] {
-  using sm_t = sml::sm<c, sml::scheduler<scheduler_without_try_run_immediate>,
-                              sml::allocator<counting_allocator>>;
+  using sm_t = sml::sm<c, sml::scheduler<scheduler_without_try_run_immediate>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
 
@@ -194,8 +192,7 @@ test sm_coroutine_path_uses_allocator = [] {
 };
 
 test sm_default_fifo_try_run_immediate_path = [] {
-  using sm_t = sml::sm<c, sml::scheduler<utility::policy::fifo_scheduler<8, 64>>,
-                              sml::allocator<counting_allocator>>;
+  using sm_t = sml::sm<c, sml::scheduler<utility::policy::fifo_scheduler<8, 64>>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
@@ -229,8 +226,7 @@ struct deferred_scheduler {
 };
 
 test sm_deferred_scheduler_not_done_then_done = [] {
-  using sm_t = sml::sm<c, sml::scheduler<deferred_scheduler>,
-                              sml::allocator<counting_allocator>>;
+  using sm_t = sml::sm<c, sml::scheduler<deferred_scheduler>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
@@ -263,13 +259,13 @@ test sm_scheduler_without_allocator_uses_default_frame_allocation = [] {
   expect(sm.is(s1));
 };
 
+#if !BOOST_SML_DISABLE_EXCEPTIONS
 utility::bool_task throwing_bool_task() {
   throw std::runtime_error("test");
   co_return true;
 }
 
 test bool_task_exception_rethrow = [] {
-#if !BOOST_SML_DISABLE_EXCEPTIONS
   auto task = throwing_bool_task();
   bool got_runtime_error = false;
   try {
@@ -278,17 +274,16 @@ test bool_task_exception_rethrow = [] {
     got_runtime_error = true;
   }
   expect(got_runtime_error);
-#endif
 };
+#endif
 
 test bool_task_await_suspend_with_non_empty_handle = [] {
-  using sm_t = sml::sm<c, sml::scheduler<deferred_scheduler>,
-                              sml::allocator<counting_allocator>>;
+  using sm_t = sml::sm<c, sml::scheduler<deferred_scheduler>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
   const auto resumed_handle = task.await_suspend(std::noop_coroutine());
-  expect(resumed_handle != std::noop_coroutine());
+  expect(resumed_handle == std::noop_coroutine());
   sm.scheduler().run_pending();
   expect(task.result());
   expect(sm.is(s1));
@@ -313,8 +308,7 @@ struct null_allocator {
 
 test sm_allocator_failure_throws_bad_alloc = [] {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
-  using sm_t = sml::sm<c, sml::scheduler<scheduler_without_try_run_immediate>,
-                              sml::allocator<null_allocator>>;
+  using sm_t = sml::sm<c, sml::scheduler<scheduler_without_try_run_immediate>, sml::allocator<null_allocator>>;
 
   sm_t sm{};
   bool got_bad_alloc = false;

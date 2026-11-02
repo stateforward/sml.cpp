@@ -24,6 +24,7 @@
 
 #if BOOST_SML_UTILITY_COROUTINE_ENABLED
 #include <array>
+#include <atomic>
 #include <concepts>
 #include <coroutine>
 #include <cstddef>
@@ -205,8 +206,15 @@ class pooled_coroutine_allocator {
   static_assert(SlotCount > 0, "pooled_coroutine_allocator slot count must be non-zero");
 
   pooled_coroutine_allocator() noexcept { reset_freelist(); }
+  pooled_coroutine_allocator(const pooled_coroutine_allocator&) noexcept { reset_freelist(); }
+  pooled_coroutine_allocator& operator=(const pooled_coroutine_allocator&) noexcept {
+    lock_scope lock{lock_};
+    reset_freelist();
+    return *this;
+  }
 
   void* allocate(const std::size_t size, const std::size_t alignment) {
+    lock_scope lock{lock_};
     if (size <= SlotSize && alignment <= alignof(pool_slot) && free_head_ != invalid_index) {
       const std::size_t slot_index = free_head_;
       free_head_ = next_free_[slot_index];
@@ -221,6 +229,7 @@ class pooled_coroutine_allocator {
       return;
     }
 
+    lock_scope lock{lock_};
     if (size <= SlotSize && alignment <= alignof(pool_slot) && is_pool_pointer(ptr)) {
       const std::size_t slot_index = slot_index_for(ptr);
       next_free_[slot_index] = free_head_;
@@ -237,6 +246,16 @@ class pooled_coroutine_allocator {
 
   struct pool_slot {
     alignas(std::max_align_t) std::array<unsigned char, SlotSize> storage{};
+  };
+
+  struct lock_scope {
+    explicit lock_scope(std::atomic_flag& flag) noexcept : flag(flag) {
+      while (flag.test_and_set(std::memory_order_acquire)) {
+      }
+    }
+    ~lock_scope() noexcept { flag.clear(std::memory_order_release); }
+
+    std::atomic_flag& flag;
   };
 
   bool is_pool_pointer(void* ptr) const noexcept {
@@ -269,6 +288,7 @@ class pooled_coroutine_allocator {
   std::array<pool_slot, SlotCount> slots_{};
   std::array<std::size_t, SlotCount> next_free_{};
   std::size_t free_head_ = 0;
+  mutable std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
 };
 
 template <class TScheduler>
@@ -284,10 +304,38 @@ concept strict_ordering_scheduler_contract =
     static_cast<bool>(TScheduler::run_to_completion);
 
 template <class TScheduler>
+concept async_coroutine_scheduler_contract = requires {
+  { TScheduler::multi_consumer } -> std::convertible_to<bool>;
+  { TScheduler::run_to_completion } -> std::convertible_to<bool>;
+} && static_cast<bool>(TScheduler::multi_consumer) && !static_cast<bool>(TScheduler::run_to_completion);
+
+template <class TScheduler>
+concept coroutine_scheduler_contract =
+    strict_ordering_scheduler_contract<TScheduler> || async_coroutine_scheduler_contract<TScheduler>;
+
+template <class TScheduler>
 concept has_try_run_immediate = requires(TScheduler scheduler) {
   {
     scheduler.try_run_immediate(+[]() noexcept {})
   } -> std::same_as<bool>;
+};
+
+// Structural contract for schedulers that deliver externally fired completions
+// (see utility/external_completion.hpp). Detected duck-typed so this header
+// stays independent of the opt-in module. Such schedulers still honor the
+// strict ordering contract: required completions are drained before the
+// top-level dispatch returns, and delivery order is deterministic.
+template <class TScheduler>
+concept external_completion_scheduler_contract = requires {
+  { TScheduler::external_completion } -> std::convertible_to<bool>;
+  { TScheduler::npos } -> std::convertible_to<std::size_t>;
+  typename TScheduler::completion_event;
+} && static_cast<bool>(TScheduler::external_completion) && requires(TScheduler scheduler) {
+  { scheduler.has_required() } -> std::convertible_to<bool>;
+  { scheduler.sweep_next_fired() } -> std::same_as<std::size_t>;
+  { scheduler.consume_next_fired_required() } -> std::same_as<std::size_t>;
+  scheduler.wait_any();
+  scheduler.reset_dispatch_state();
 };
 
 template <class TAllocator>
@@ -306,6 +354,7 @@ class bool_task {
   struct promise_type {
     using allocate_fn = void* (*)(void*, std::size_t, std::size_t);
     using deallocate_fn = void (*)(void*, void*, std::size_t, std::size_t) noexcept;
+    using completion_fn = void (*)(void*) noexcept;
 
     struct frame_header {
       void* allocator_ctx = nullptr;
@@ -389,22 +438,45 @@ class bool_task {
           });
     }
 
-    template <class TAllocator, class... TArgs>
-    static void* operator new(std::size_t frame_size, std::allocator_arg_t, TAllocator& allocator, TArgs&&...) {
+    // The allocator_arg_t overloads match only an exact std::allocator_arg_t, so a
+    // coroutine taking an sm& first never tries sm's conversion operator.
+    template <class TTag, class TAllocator, class... TArgs>
+      requires std::same_as<std::remove_cvref_t<TTag>, std::allocator_arg_t>
+    static void* operator new(std::size_t frame_size, TTag&&, TAllocator& allocator, TArgs&&...) {
       return allocate_frame_with_allocator(frame_size, allocator);
     }
 
     static void operator delete(void* frame_ptr) noexcept { deallocate_frame(frame_ptr); }
     static void operator delete(void* frame_ptr, std::size_t) noexcept { deallocate_frame(frame_ptr); }
 
-    template <class TAllocator, class... TArgs>
-    static void operator delete(void* frame_ptr, std::allocator_arg_t, TAllocator&, TArgs&&...) noexcept {
+    template <class TTag, class TAllocator, class... TArgs>
+      requires std::same_as<std::remove_cvref_t<TTag>, std::allocator_arg_t>
+    static void operator delete(void* frame_ptr, TTag&&, TAllocator&, TArgs&&...) noexcept {
       deallocate_frame(frame_ptr);
     }
 
+    static constexpr unsigned running = 0u;
+    static constexpr unsigned awaiting = 1u;
+    static constexpr unsigned completing = 2u;
+    static constexpr unsigned completed = 3u;
+
+    promise_type() = default;
+
+    template <class TTag, class TAllocator, class TOwner, class... TArgs>
+      requires std::same_as<std::remove_cvref_t<TTag>, std::allocator_arg_t> &&
+                   requires(TOwner& owner) { owner.release_async_dispatch_active(); }
+    promise_type(TTag&&, TAllocator&, TOwner& owner, TArgs&&...) noexcept
+        : completion_ctx(&owner),
+          completion(+[](void* ctx) noexcept { static_cast<TOwner*>(ctx)->release_async_dispatch_active(); }) {}
+
     bool value = false;
+#if !BOOST_SML_DISABLE_EXCEPTIONS
     std::exception_ptr exception = nullptr;
+#endif
     std::coroutine_handle<> continuation = std::noop_coroutine();
+    std::atomic<unsigned> state = running;
+    void* completion_ctx = nullptr;
+    completion_fn completion = nullptr;
 
     bool_task get_return_object() noexcept { return bool_task{handle_type::from_promise(*this)}; }
     std::suspend_never initial_suspend() noexcept { return {}; }
@@ -412,14 +484,33 @@ class bool_task {
     auto final_suspend() noexcept {
       struct continuation_awaiter {
         bool await_ready() const noexcept { return false; }
-        std::coroutine_handle<> await_suspend(handle_type h) const noexcept { return h.promise().continuation; }
+        std::coroutine_handle<> await_suspend(handle_type h) const noexcept {
+          auto& promise = h.promise();
+          const unsigned previous = promise.state.exchange(completing, std::memory_order_acq_rel);
+          auto continuation = previous == awaiting ? promise.continuation : std::noop_coroutine();
+          // Release the dispatch guard before publishing completion so a caller
+          // that observes await_ready() can dispatch to the same machine again.
+          if (promise.completion != nullptr) {
+            promise.completion(promise.completion_ctx);
+          }
+          promise.state.store(completed, std::memory_order_release);
+          return continuation;
+        }
         void await_resume() const noexcept {}
       };
       return continuation_awaiter{};
     }
 
     void return_value(const bool v) noexcept { value = v; }
-    void unhandled_exception() noexcept { exception = std::current_exception(); }
+    void unhandled_exception() noexcept {
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+      exception = std::current_exception();
+#else
+      std::terminate();
+#endif
+    }
+
+    bool is_complete() const noexcept { return state.load(std::memory_order_acquire) == completed; }
   };
 
   bool_task() = default;
@@ -432,11 +523,7 @@ class bool_task {
     return task;
   }
 
-  ~bool_task() {
-    if (handle_) {
-      handle_.destroy();
-    }
-  }
+  ~bool_task() { destroy_if_complete(); }
 
   bool_task(const bool_task&) = delete;
   bool_task& operator=(const bool_task&) = delete;
@@ -454,9 +541,7 @@ class bool_task {
       return *this;
     }
 
-    if (handle_) {
-      handle_.destroy();
-    }
+    destroy_if_complete();
     handle_ = std::exchange(other.handle_, {});
     has_immediate_value_ = other.has_immediate_value_;
     immediate_value_ = other.immediate_value_;
@@ -469,15 +554,29 @@ class bool_task {
     if (has_immediate_value_) {
       return true;
     }
-    return (handle_ == nullptr) || handle_.done();
+    return (handle_ == nullptr) || handle_.promise().is_complete();
   }
 
   std::coroutine_handle<> await_suspend(std::coroutine_handle<> awaiting) noexcept {
     if (handle_ == nullptr) {
       return std::noop_coroutine();
     }
-    handle_.promise().continuation = awaiting;
-    return handle_;
+    auto& promise = handle_.promise();
+    promise.continuation = awaiting;
+    const unsigned previous = promise.state.exchange(promise_type::awaiting, std::memory_order_acq_rel);
+    if (previous == promise_type::completed) {
+      promise.state.store(promise_type::completed, std::memory_order_release);
+      return awaiting;
+    }
+    if (previous == promise_type::completing) {
+      while (!promise.is_complete()) {
+      }
+      return awaiting;
+    }
+    if (previous == promise_type::awaiting) {
+      std::terminate();
+    }
+    return std::noop_coroutine();
   }
 
   bool await_resume() { return result(); }
@@ -489,24 +588,32 @@ class bool_task {
     if (handle_ == nullptr) {
       return false;
     }
-    if (!handle_.done()) {
+    if (!handle_.promise().is_complete()) {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
       throw std::logic_error("bool_task result() called before coroutine completion");
 #else
       std::terminate();
 #endif
     }
-    if (handle_.promise().exception) {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
+    if (handle_.promise().exception) {
       std::rethrow_exception(handle_.promise().exception);
-#else
-      std::terminate();
-#endif
     }
+#endif
     return handle_.promise().value;
   }
 
  private:
+  void destroy_if_complete() noexcept {
+    if (handle_ == nullptr) {
+      return;
+    }
+    if (!handle_.promise().is_complete()) {
+      std::terminate();
+    }
+    handle_.destroy();
+  }
+
   handle_type handle_{};
   bool has_immediate_value_ = false;
   bool immediate_value_ = false;
@@ -516,42 +623,176 @@ class bool_task {
 
 namespace back {
 
+// Coroutine dispatch for sm<T, scheduler<TScheduler>, ...>. Declared in sml.hpp
+// and defined here so the core header stays C++14.
 template <class TScheduler>
 struct async_dispatch {
   static_assert(utility::policy::valid_coroutine_scheduler<TScheduler>, "scheduler must provide schedule(fn)");
-  static_assert(utility::policy::strict_ordering_scheduler_contract<TScheduler>,
-                "scheduler must guarantee FIFO ordering, single-consumer dispatch, and run-to-completion");
+  static_assert(utility::policy::coroutine_scheduler_contract<TScheduler>,
+                "scheduler must be strict run-to-completion or an async coroutine scheduler");
+
+  // Per-machine dispatch state stored by sm next to the scheduler.
+  struct state {
+    state() = default;
+    state(const state&) noexcept {}
+    state& operator=(const state&) noexcept {
+      external_dispatch_depth = 0;
+      active.store(false, std::memory_order_relaxed);
+      return *this;
+    }
+
+    bool try_acquire() noexcept { return !active.exchange(true, std::memory_order_acquire); }
+    void release() noexcept { active.store(false, std::memory_order_release); }
+
+    // Called by bool_task::promise_type when the dispatch coroutine completes.
+    void release_async_dispatch_active() noexcept {
+      if constexpr (utility::policy::async_coroutine_scheduler_contract<TScheduler>) {
+        release();
+      }
+    }
+
+    // Depth of synchronous external-completion dispatches on this machine;
+    // nested calls (actions re-entering process_event) skip reset/sweep/drain
+    // so the outermost dispatch's run-to-completion drain stays intact.
+    std::size_t external_dispatch_depth = 0;
+    std::atomic<bool> active{false};
+  };
+
+  template <class TSM, class TEvent>
+  static bool process_event(TSM& sm, const TEvent& event) {
+    if constexpr (utility::policy::external_completion_scheduler_contract<TScheduler>) {
+      // Only the outermost dispatch owns the completion machinery: a nested
+      // synchronous process_event from a transition action dispatches its
+      // trigger plainly, and any sources it marks required are drained by the
+      // enclosing dispatch before that dispatch returns. Resetting or
+      // draining from the nested call would clear required bits the outer
+      // drain still needs.
+      auto& dispatch = sm.dispatch_state_;
+      if (dispatch.external_dispatch_depth > 0) {
+        return sm.process_event_impl(event);
+      }
+
+      struct dispatch_depth_scope {
+        std::size_t& depth;
+        ~dispatch_depth_scope() noexcept { --depth; }
+      };
+      ++dispatch.external_dispatch_depth;
+      dispatch_depth_scope depth_scope{dispatch.external_dispatch_depth};
+
+      // Synchronous drive with zero coroutine machinery: (1) commit sweep -
+      // completions that fired between dispatches are delivered as explicit
+      // completion events in ascending source order before the trigger runs;
+      // (2) the trigger dispatches, its actions may arm sources, hand them to
+      // workers, and mark them required; (3) the drain loop blocks on the
+      // scheduler's semaphore and delivers each required completion (lowest
+      // fired index first) until none remain, so nothing observable escapes
+      // this call and delivery happens only on this (the dispatching)
+      // thread. Required bits left by a previous aborted dispatch are
+      // cleared first. The fast path (no fired and no required sources) costs
+      // one sweep scan plus one mask check over the inline dispatch.
+      auto& scheduler = sm.scheduler();
+      scheduler.reset_dispatch_state();
+      using completion_event_t = typename TScheduler::completion_event;
+      for (std::size_t index = scheduler.sweep_next_fired(); index != TScheduler::npos; index = scheduler.sweep_next_fired()) {
+        (void)sm.process_event_impl(completion_event_t{index});
+      }
+      bool accepted = sm.process_event_impl(event);
+      while (scheduler.has_required()) {
+        const std::size_t index = scheduler.consume_next_fired_required();
+        if (index == TScheduler::npos) {
+          scheduler.wait_any();
+          continue;
+        }
+        accepted = sm.process_event_impl(completion_event_t{index}) && accepted;
+      }
+      return accepted;
+    } else if constexpr (utility::policy::async_coroutine_scheduler_contract<TScheduler>) {
+      auto& dispatch = sm.dispatch_state_;
+      if (!dispatch.try_acquire()) {
+        if (active_owner == &sm) {
+          return sm.process_event_impl(event);
+        }
+        return false;
+      }
+      struct active_reset {
+        state& active;
+        ~active_reset() noexcept { active.release(); }
+      } reset{dispatch};
+      active_owner_scope owner{&sm};
+      return sm.process_event_impl(event);
+    } else {
+      return sm.process_event_impl(event);
+    }
+  }
 
   template <class TSM, class TEvent>
   static utility::bool_task process_event_async(TSM& sm, TEvent&& event) {
     using event_t = typename std::decay<TEvent>::type;
-    event_t event_copy(static_cast<TEvent&&>(event));
-
-    if constexpr (std::is_same_v<TScheduler, utility::policy::inline_scheduler>) {
-      return utility::bool_task::from_value(sm.process_event(event_copy));
+    if constexpr (utility::policy::external_completion_scheduler_contract<TScheduler>) {
+      event_t event_copy(static_cast<TEvent&&>(event));
+      return utility::bool_task::from_value(process_event(sm, event_copy));
+    } else if constexpr (std::is_same_v<TScheduler, utility::policy::inline_scheduler>) {
+      event_t event_copy(static_cast<TEvent&&>(event));
+      return utility::bool_task::from_value(sm.process_event_impl(event_copy));
+    } else if constexpr (utility::policy::async_coroutine_scheduler_contract<TScheduler>) {
+      auto& dispatch = sm.dispatch_state_;
+      if (!dispatch.try_acquire()) {
+        return utility::bool_task::from_value(false);
+      }
+#if !BOOST_SML_DISABLE_EXCEPTIONS
+      try {
+        event_t event_copy(static_cast<TEvent&&>(event));
+        return process_event_async_impl(std::allocator_arg, allocator_of(sm), dispatch, sm, static_cast<event_t&&>(event_copy));
+      } catch (...) {
+        dispatch.release();
+        throw;
+      }
+#else
+      event_t event_copy(static_cast<TEvent&&>(event));
+      return process_event_async_impl(std::allocator_arg, allocator_of(sm), dispatch, sm, static_cast<event_t&&>(event_copy));
+#endif
     } else {
+      event_t event_copy(static_cast<TEvent&&>(event));
       if constexpr (utility::policy::has_try_run_immediate<TScheduler>) {
         bool accepted = false;
-        if (sm.scheduler().try_run_immediate([&sm, &event_copy, &accepted]() { accepted = sm.process_event(event_copy); })) {
+        if (sm.scheduler().try_run_immediate(
+                [&sm, &event_copy, &accepted]() { accepted = sm.process_event_impl(event_copy); })) {
           return utility::bool_task::from_value(accepted);
         }
       }
 
-      if constexpr (requires { sm.allocator(); }) {
-        static_assert(utility::policy::valid_coroutine_allocator<std::decay_t<decltype(sm.allocator())>>,
-                      "allocator must provide allocate(size, alignment) and noexcept deallocate(ptr, size, alignment)");
-        return process_event_async_impl(std::allocator_arg, sm.allocator(), sm, static_cast<event_t&&>(event_copy));
-      } else {
-        static utility::policy::heap_coroutine_allocator heap{};
-        return process_event_async_impl(std::allocator_arg, heap, sm, static_cast<event_t&&>(event_copy));
-      }
+      return process_event_async_impl(std::allocator_arg, allocator_of(sm), sm.dispatch_state_, sm,
+                                      static_cast<event_t&&>(event_copy));
     }
   }
 
  private:
+  inline static thread_local const void* active_owner = nullptr;
+
+  struct active_owner_scope {
+    const void* previous;
+    explicit active_owner_scope(const void* current) noexcept : previous(active_owner) { active_owner = current; }
+    ~active_owner_scope() noexcept { active_owner = previous; }
+  };
+
+  template <class TSM>
+  static decltype(auto) allocator_of(TSM& sm) noexcept {
+    if constexpr (requires { sm.allocator(); }) {
+      static_assert(utility::policy::valid_coroutine_allocator<std::remove_reference_t<decltype(sm.allocator())>>,
+                    "allocator must provide allocate(size, alignment) and noexcept deallocate(ptr, size, alignment)");
+      return (sm.allocator());
+    } else {
+      static utility::policy::heap_coroutine_allocator heap{};
+      return (heap);
+    }
+  }
+
+  // The promise takes `dispatch` as its owner and releases the async guard when
+  // the coroutine completes. The event is taken by reference and moved inside
+  // the body (before the first suspension) so a throwing move lands in the task.
   template <class TAllocator, class TSM, class TEvent>
-  static utility::bool_task process_event_async_impl(std::allocator_arg_t, TAllocator&, TSM& sm, TEvent event) {
-    co_return co_await process_event_awaitable<TSM, TEvent>{sm, static_cast<TEvent&&>(event)};
+  static utility::bool_task process_event_async_impl(std::allocator_arg_t, TAllocator&, state&, TSM& sm, TEvent&& event) {
+    co_return co_await process_event_awaitable<TSM, typename std::decay<TEvent>::type>{sm, static_cast<TEvent&&>(event)};
   }  // GCOVR_EXCL_LINE
 
   template <class TSM, class TEvent>
@@ -559,21 +800,26 @@ struct async_dispatch {
     TSM& sm;
     TEvent event_value;
     bool accepted = false;
+#if !BOOST_SML_DISABLE_EXCEPTIONS
     std::exception_ptr exception{};
+#endif
 
     bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) {
       sm.scheduler().schedule([this, handle]() mutable {
+        {
+          active_owner_scope owner{&sm};
 #if !BOOST_SML_DISABLE_EXCEPTIONS
-        try {
-          accepted = sm.process_event(event_value);
-        } catch (...) {
-          exception = std::current_exception();
-        }
+          try {
+            accepted = sm.process_event_impl(event_value);
+          } catch (...) {
+            exception = std::current_exception();
+          }
 #else
-        accepted = sm.process_event(event_value);
+          accepted = sm.process_event_impl(event_value);
 #endif
+        }
         handle.resume();
       });
     }

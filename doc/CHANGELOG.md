@@ -5,8 +5,15 @@
     - Renamed `sml/utility/co_sm.hpp` to `sml/utility/coroutine.hpp`
     - Coroutine frames use the heap unless an `sml::allocator<T>` policy is given (`co_sm` defaulted to `fifo_scheduler` + `pooled_coroutine_allocator`)
 
+    - With a scheduler policy, `sm::process_event` also routes through the scheduler's dispatch rules (external-completion drain, async actor guard), as `co_sm::process_event` did
+    - `thread_pool_scheduler` and `external_completion_scheduler` plug in via `sml::scheduler<T>`; tests and benchmark renamed to `coroutine_thread_pool` / `thread_pool_coroutine`
+
 - **Additions**
     - `sml::scheduler<T>` / `sml::allocator<T>` policies with `sm.scheduler()` / `sm.allocator()` accessors
+
+- **Bug Fixes**
+    - `bool_task` released the async dispatch guard after publishing completion, so re-dispatching to the same machine right after `await_ready()` could be rejected
+    - `bool_task` allocator-aware promise overloads matched any first argument convertible to `std::allocator_arg_t`, breaking coroutines that take an `sm&` first
 
 ## [1.1.13] - 2025-12-01
 - Changes

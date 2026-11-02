@@ -29,6 +29,7 @@ This fork addresses critical bugs, adds utilities for high-throughput and async 
 
 - **Completion transitions** (`completion<T>`) -- post-event transitions with origin event propagation
 - **Coroutine dispatch** (`sml::scheduler<T>` / `sml::allocator<T>`) -- C++20 `process_event_async` on `sm` with configurable scheduler and allocator
+- **`thread_pool_scheduler`** -- opt-in C++20 multi-consumer work pool for nonblocking coroutine dispatch plus explicit blocking fork/join APIs (warm workers, fixed task ring, no allocation on dispatch)
 - **`sm_pool`** -- pool-based container for managing thousands of SM instances with indexed and batch dispatch
 - **`dispatch_table`** -- compile-time dispatch table for ID-based event routing at zero runtime overhead
 
@@ -125,12 +126,15 @@ cl /std:c++14 /Ox /W3 tcp_release.cpp
 
 ## Utilities
 
+<!-- utility APIs from include/boost/sml/utility/coroutine.hpp and include/boost/sml/utility/thread_pool_scheduler.hpp -->
+
 ### Coroutine dispatch (C++20)
 
 Give `sm` a `sml::scheduler<T>` policy (and optionally `sml::allocator<T>`) and include the coroutine utility header to get `process_event_async`. Requires C++20 with coroutine support; `sml.hpp` itself stays C++14.
 
 ```cpp
 #include <stateforward/sml/utility/coroutine.hpp>
+#include <stateforward/sml/utility/thread_pool_scheduler.hpp>
 
 namespace utility = sml::utility;
 
@@ -143,10 +147,22 @@ sm.process_event(my_event{});
 
 // Asynchronous dispatch via coroutine
 auto task = sm.process_event_async(my_event{});
-bool accepted = task.result();
+
+// result() is nonblocking: call it only after completion, or co_await the task.
+if (task.await_ready()) {
+  bool accepted = task.result();
+}
 
 sm.scheduler();  // the stored scheduler instance
 sm.allocator();  // the stored allocator instance
+
+// Thread-pool dispatch starts work on a worker and lets the caller await later.
+using pool_scheduler = utility::policy::thread_pool_scheduler<4>;
+sml::sm<my_fsm, sml::scheduler<pool_scheduler>> pooled{};
+auto pooled_task = pooled.process_event_async(my_event{});
+// ...do local work...
+while (!pooled_task.await_ready()) {}
+bool pooled_accepted = pooled_task.result();
 ```
 
 **Schedulers** (`sml::scheduler<T>`; any `T` with `schedule(fn)` and the FIFO / single-consumer / run-to-completion flags):
@@ -155,6 +171,9 @@ sm.allocator();  // the stored allocator instance
 |--------|-------------|
 | `inline_scheduler` | Runs tasks immediately, no coroutine frame |
 | `fifo_scheduler<Capacity, InlineBytes>` | FIFO queue with bounded inline storage |
+| `thread_pool_scheduler<Workers, Capacity, InlineBytes>` | Starts `process_event_async` on worker threads and returns a task to await later; concurrent same-actor overlap is rejected |
+
+`thread_pool_scheduler::schedule(fn)` is nonblocking. Use `run_or_schedule_and_wait(fn)` or `thread_pool_scheduler::join_group` at RTC call sites that need an immediate join. Destroying an incomplete `bool_task` is a hard contract violation and terminates; keep the task alive until it is ready or awaited.
 
 **Allocators** (`sml::allocator<T>`; optional, coroutine frames use the heap without one):
 

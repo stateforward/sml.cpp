@@ -2231,10 +2231,12 @@ template <class TScheduler, class TAllocator>
 struct sm_scheduling {
   TScheduler scheduler_{};
   TAllocator allocator_{};
+  typename async_dispatch<TScheduler>::state dispatch_state_{};
 };
 template <class TScheduler>
 struct sm_scheduling<TScheduler, no_policy> {
   TScheduler scheduler_{};
+  typename async_dispatch<TScheduler>::state dispatch_state_{};
 };
 template <>
 struct sm_scheduling<no_policy, no_policy> {};
@@ -2289,13 +2291,9 @@ class sm : sm_scheduling<typename Tsm::scheduler_policy::type, typename Tsm::all
   constexpr sm(sm &&) = default;
   constexpr sm &operator=(const sm &) = default;
   constexpr sm &operator=(sm &&) = default;
-  template <class TEvent, __BOOST_SML_REQUIRES(aux::is_base_of<TEvent, events_ids>::value)>
+  template <class TEvent>
   constexpr bool process_event(const TEvent &event) {
-    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(event, deps_, sub_sms_);
-  }
-  template <class TEvent, __BOOST_SML_REQUIRES(!aux::is_base_of<TEvent, events_ids>::value)>
-  constexpr bool process_event(const TEvent &event) {
-    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(unexpected_event<_, TEvent>{event}, deps_, sub_sms_);
+    return dispatch_event(event, aux::type_wrapper<scheduler_t>{});
   }
   template <class TEvent, class T = scheduler_t, __BOOST_SML_REQUIRES(!aux::is_same<no_policy, T>::value)>
   auto process_event_async(TEvent &&event) {
@@ -2405,6 +2403,24 @@ class sm : sm_scheduling<typename Tsm::scheduler_policy::type, typename Tsm::all
   }
 
  private:
+  template <class>
+  friend struct async_dispatch;
+  template <class TEvent>
+  constexpr bool dispatch_event(const TEvent &event, aux::type_wrapper<no_policy>) {
+    return process_event_impl(event);
+  }
+  template <class TEvent, class TScheduler>
+  bool dispatch_event(const TEvent &event, aux::type_wrapper<TScheduler>) {
+    return async_dispatch<TScheduler>::process_event(*this, event);
+  }
+  template <class TEvent, __BOOST_SML_REQUIRES(aux::is_base_of<TEvent, events_ids>::value)>
+  constexpr bool process_event_impl(const TEvent &event) {
+    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(event, deps_, sub_sms_);
+  }
+  template <class TEvent, __BOOST_SML_REQUIRES(!aux::is_base_of<TEvent, events_ids>::value)>
+  constexpr bool process_event_impl(const TEvent &event) {
+    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(unexpected_event<_, TEvent>{event}, deps_, sub_sms_);
+  }
   deps_t deps_;
   sub_sms_t sub_sms_;
 };
