@@ -7,7 +7,7 @@
 //
 #include <atomic>
 #include <boost/sml.hpp>
-#include <boost/sml/utility/co_sm.hpp>
+#include <boost/sml/utility/coroutine.hpp>
 #include <boost/sml/utility/thread_pool_scheduler.hpp>
 #include <chrono>
 #include <cstddef>
@@ -22,7 +22,7 @@
 
 namespace sml = boost::sml;
 
-#if BOOST_SML_UTILITY_CO_SM_ENABLED && BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
+#if BOOST_SML_UTILITY_COROUTINE_ENABLED && BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
 namespace utility = sml::utility;
 namespace policy = utility::policy;
 
@@ -79,8 +79,8 @@ struct simple_machine {
   }
 };
 
-using simple_sm = utility::co_sm<simple_machine, policy::coroutine_scheduler<scheduler_t>,
-                                 policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, simple_context>;
+using simple_sm =
+    sml::sm<simple_machine, sml::scheduler<scheduler_t>, sml::allocator<policy::pooled_coroutine_allocator<4096, 8>>>;
 
 utility::bool_task await_task(utility::bool_task& task, std::atomic<bool>& resumed, bool& accepted) {
   accepted = co_await task;
@@ -97,10 +97,11 @@ utility::bool_task await_then_dispatch_again(simple_sm& sm, utility::bool_task& 
   co_return first_accepted&& second_accepted;
 }
 
+// Counters are static: sm keeps its allocator private, so tests observe it from outside.
 struct fixed_allocator {
-  std::size_t allocate_calls = 0;
-  std::size_t deallocate_calls = 0;
-  bool heap_used = false;
+  static inline std::size_t allocate_calls = 0;
+  static inline std::size_t deallocate_calls = 0;
+  static inline bool heap_used = false;
   bool used = false;
   alignas(std::max_align_t) unsigned char storage[4096]{};
 
@@ -121,8 +122,7 @@ struct fixed_allocator {
   }
 };
 
-using fixed_alloc_sm = utility::co_sm<simple_machine, policy::coroutine_scheduler<scheduler_t>,
-                                      policy::coroutine_allocator<fixed_allocator>, simple_context>;
+using fixed_alloc_sm = sml::sm<simple_machine, sml::scheduler<scheduler_t>, sml::allocator<fixed_allocator>>;
 
 struct blocking_context {
   std::atomic<bool>* entered = nullptr;
@@ -146,8 +146,8 @@ struct blocking_machine {
   }
 };
 
-using blocking_sm = utility::co_sm<blocking_machine, policy::coroutine_scheduler<scheduler_t>,
-                                   policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, blocking_context>;
+using blocking_sm =
+    sml::sm<blocking_machine, sml::scheduler<scheduler_t>, sml::allocator<policy::pooled_coroutine_allocator<4096, 8>>>;
 
 struct nested_context {
   void* self = nullptr;
@@ -176,8 +176,8 @@ struct nested_machine {
   }
 };
 
-using nested_sm = utility::co_sm<nested_machine, policy::coroutine_scheduler<scheduler_t>,
-                                 policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, nested_context>;
+using nested_sm =
+    sml::sm<nested_machine, sml::scheduler<scheduler_t>, sml::allocator<policy::pooled_coroutine_allocator<4096, 8>>>;
 
 #if !BOOST_SML_DISABLE_EXCEPTIONS
 struct throwing_move_event {
@@ -207,8 +207,7 @@ struct throwing_move_machine {
 };
 
 using throwing_move_sm =
-    utility::co_sm<throwing_move_machine, policy::coroutine_scheduler<scheduler_t>,
-                   policy::coroutine_allocator<policy::pooled_coroutine_allocator<4096, 8>>, simple_context>;
+    sml::sm<throwing_move_machine, sml::scheduler<scheduler_t>, sml::allocator<policy::pooled_coroutine_allocator<4096, 8>>>;
 #endif
 
 #if !defined(_WIN32)
@@ -227,7 +226,7 @@ void destroy_incomplete_task_child() {
 
 }  // namespace
 
-test thread_pool_co_sm_process_event_async_starts_now_and_awaits_later = [] {
+test thread_pool_coroutine_process_event_async_starts_now_and_awaits_later = [] {
   std::atomic<int> calls{0};
   simple_context context{&calls};
   simple_sm sm{context};
@@ -252,7 +251,7 @@ test thread_pool_co_sm_process_event_async_starts_now_and_awaits_later = [] {
   expect(sm.is(s1));
 };
 
-test thread_pool_co_sm_await_resumes_after_worker_completion = [] {
+test thread_pool_coroutine_await_resumes_after_worker_completion = [] {
   std::atomic<int> calls{0};
   simple_context context{&calls};
   simple_sm sm{context};
@@ -276,7 +275,7 @@ test thread_pool_co_sm_await_resumes_after_worker_completion = [] {
   expect(task.result());
 };
 
-test thread_pool_co_sm_await_can_dispatch_same_actor_again = [] {
+test thread_pool_coroutine_await_can_dispatch_same_actor_again = [] {
   std::atomic<int> calls{0};
   simple_context context{&calls};
   simple_sm sm{context};
@@ -300,7 +299,7 @@ test thread_pool_co_sm_await_can_dispatch_same_actor_again = [] {
   expect(2 == calls.load(std::memory_order_acquire));
 };
 
-test thread_pool_co_sm_incomplete_task_destruction_terminates = [] {
+test thread_pool_coroutine_incomplete_task_destruction_terminates = [] {
 #if !defined(_WIN32)
   const pid_t pid = fork();
   expect(pid >= 0);
@@ -317,7 +316,7 @@ test thread_pool_co_sm_incomplete_task_destruction_terminates = [] {
 #endif
 };
 
-test thread_pool_co_sm_fixed_allocator_avoids_heap_fallback = [] {
+test thread_pool_coroutine_fixed_allocator_avoids_heap_fallback = [] {
   std::atomic<int> calls{0};
   simple_context context{&calls};
   fixed_alloc_sm sm{context};
@@ -328,13 +327,13 @@ test thread_pool_co_sm_fixed_allocator_avoids_heap_fallback = [] {
     expect(task.result());
   }
 
-  expect(1u == sm.allocator().allocate_calls);
-  expect(1u == sm.allocator().deallocate_calls);
-  expect(!sm.allocator().heap_used);
+  expect(1u == fixed_allocator::allocate_calls);
+  expect(1u == fixed_allocator::deallocate_calls);
+  expect(!fixed_allocator::heap_used);
   expect(1 == calls.load(std::memory_order_acquire));
 };
 
-test thread_pool_co_sm_rejects_concurrent_dispatch_to_same_actor = [] {
+test thread_pool_coroutine_rejects_concurrent_dispatch_to_same_actor = [] {
   std::atomic<int> calls{0};
   simple_context context{&calls};
   simple_sm sm{context};
@@ -354,7 +353,7 @@ test thread_pool_co_sm_rejects_concurrent_dispatch_to_same_actor = [] {
   expect(1 == calls.load(std::memory_order_acquire));
 };
 
-test thread_pool_co_sm_process_event_allows_same_stack_reentry = [] {
+test thread_pool_coroutine_process_event_allows_same_stack_reentry = [] {
   std::atomic<int> calls{0};
   std::atomic<int> nested_accepts{0};
   nested_context context{};
@@ -373,7 +372,7 @@ test thread_pool_co_sm_process_event_allows_same_stack_reentry = [] {
   expect(sm.is(s1));
 };
 
-test thread_pool_co_sm_direct_process_event_allows_same_stack_reentry = [] {
+test thread_pool_coroutine_direct_process_event_allows_same_stack_reentry = [] {
   std::atomic<int> calls{0};
   std::atomic<int> nested_accepts{0};
   nested_context context{};
@@ -390,7 +389,7 @@ test thread_pool_co_sm_direct_process_event_allows_same_stack_reentry = [] {
   expect(sm.is(s1));
 };
 
-test thread_pool_co_sm_setup_exception_releases_actor_guard = [] {
+test thread_pool_coroutine_setup_exception_releases_actor_guard = [] {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
   std::atomic<int> calls{0};
   simple_context context{&calls};
@@ -419,7 +418,7 @@ test thread_pool_co_sm_setup_exception_releases_actor_guard = [] {
 #endif
 };
 
-test thread_pool_co_sm_different_actors_run_concurrently = [] {
+test thread_pool_coroutine_different_actors_run_concurrently = [] {
   std::atomic<bool> entered1{false};
   std::atomic<bool> entered2{false};
   std::atomic<bool> release{false};
@@ -444,5 +443,5 @@ test thread_pool_co_sm_different_actors_run_concurrently = [] {
 };
 
 #else
-test thread_pool_co_sm_disabled_without_cxx20_coroutines_and_semaphore = [] { expect(true); };
+test thread_pool_coroutine_disabled_without_cxx20_coroutines_and_semaphore = [] { expect(true); };
 #endif

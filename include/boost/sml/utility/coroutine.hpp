@@ -5,24 +5,24 @@
 // (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 //
-#ifndef BOOST_SML_UTILITY_CO_SM_HPP
-#define BOOST_SML_UTILITY_CO_SM_HPP
+#ifndef BOOST_SML_UTILITY_COROUTINE_HPP
+#define BOOST_SML_UTILITY_COROUTINE_HPP
 
 #include "boost/sml.hpp"
 
 #if defined(_MSVC_LANG)
-#define BOOST_SML_UTILITY_CO_SM_LANG _MSVC_LANG
+#define BOOST_SML_UTILITY_COROUTINE_LANG _MSVC_LANG
 #else
-#define BOOST_SML_UTILITY_CO_SM_LANG __cplusplus
+#define BOOST_SML_UTILITY_COROUTINE_LANG __cplusplus
 #endif
 
-#if BOOST_SML_UTILITY_CO_SM_LANG >= 202002L && (defined(__cpp_impl_coroutine) || defined(__cpp_coroutines))
-#define BOOST_SML_UTILITY_CO_SM_ENABLED 1
+#if BOOST_SML_UTILITY_COROUTINE_LANG >= 202002L && (defined(__cpp_impl_coroutine) || defined(__cpp_coroutines))
+#define BOOST_SML_UTILITY_COROUTINE_ENABLED 1
 #else
-#define BOOST_SML_UTILITY_CO_SM_ENABLED 0
+#define BOOST_SML_UTILITY_COROUTINE_ENABLED 0
 #endif
 
-#if BOOST_SML_UTILITY_CO_SM_ENABLED
+#if BOOST_SML_UTILITY_COROUTINE_ENABLED
 #include <array>
 #include <atomic>
 #include <concepts>
@@ -188,11 +188,6 @@ class fifo_scheduler {
   bool draining_ = false;
 };
 
-template <class TScheduler>
-struct coroutine_scheduler {
-  using scheduler_type = TScheduler;
-};
-
 struct heap_coroutine_allocator {
   void* allocate(const std::size_t size, const std::size_t alignment) {
     return ::operator new(size, std::align_val_t(alignment));
@@ -296,14 +291,6 @@ class pooled_coroutine_allocator {
   mutable std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
 };
 
-template <class TAllocator>
-struct coroutine_allocator {
-  using allocator_type = TAllocator;
-};
-
-template <class TSchedulerPolicy>
-concept valid_coroutine_scheduler_policy = requires { typename TSchedulerPolicy::scheduler_type; };
-
 template <class TScheduler>
 concept valid_coroutine_scheduler = requires(TScheduler scheduler, void (*fn_ptr)()) { scheduler.schedule(fn_ptr); };
 
@@ -350,9 +337,6 @@ concept external_completion_scheduler_contract = requires {
   scheduler.wait_any();
   scheduler.reset_dispatch_state();
 };
-
-template <class TAllocatorPolicy>
-concept valid_coroutine_allocator_policy = requires { typename TAllocatorPolicy::allocator_type; };
 
 template <class TAllocator>
 concept valid_coroutine_allocator = requires(TAllocator allocator, void* ptr, std::size_t size, std::size_t alignment) {
@@ -454,16 +438,20 @@ class bool_task {
           });
     }
 
-    template <class TAllocator, class... TArgs>
-    static void* operator new(std::size_t frame_size, std::allocator_arg_t, TAllocator& allocator, TArgs&&...) {
+    // The allocator_arg_t overloads match only an exact std::allocator_arg_t, so a
+    // coroutine taking an sm& first never tries sm's conversion operator.
+    template <class TTag, class TAllocator, class... TArgs>
+      requires std::same_as<std::remove_cvref_t<TTag>, std::allocator_arg_t>
+    static void* operator new(std::size_t frame_size, TTag&&, TAllocator& allocator, TArgs&&...) {
       return allocate_frame_with_allocator(frame_size, allocator);
     }
 
     static void operator delete(void* frame_ptr) noexcept { deallocate_frame(frame_ptr); }
     static void operator delete(void* frame_ptr, std::size_t) noexcept { deallocate_frame(frame_ptr); }
 
-    template <class TAllocator, class... TArgs>
-    static void operator delete(void* frame_ptr, std::allocator_arg_t, TAllocator&, TArgs&&...) noexcept {
+    template <class TTag, class TAllocator, class... TArgs>
+      requires std::same_as<std::remove_cvref_t<TTag>, std::allocator_arg_t>
+    static void operator delete(void* frame_ptr, TTag&&, TAllocator&, TArgs&&...) noexcept {
       deallocate_frame(frame_ptr);
     }
 
@@ -474,8 +462,10 @@ class bool_task {
 
     promise_type() = default;
 
-    template <class TAllocator, class TOwner, class... TArgs>
-    promise_type(std::allocator_arg_t, TAllocator&, TOwner& owner, TArgs&&...) noexcept
+    template <class TTag, class TAllocator, class TOwner, class... TArgs>
+      requires std::same_as<std::remove_cvref_t<TTag>, std::allocator_arg_t> &&
+                   requires(TOwner& owner) { owner.release_async_dispatch_active(); }
+    promise_type(TTag&&, TAllocator&, TOwner& owner, TArgs&&...) noexcept
         : completion_ctx(&owner),
           completion(+[](void* ctx) noexcept { static_cast<TOwner*>(ctx)->release_async_dispatch_active(); }) {}
 
@@ -498,12 +488,12 @@ class bool_task {
           auto& promise = h.promise();
           const unsigned previous = promise.state.exchange(completing, std::memory_order_acq_rel);
           auto continuation = previous == awaiting ? promise.continuation : std::noop_coroutine();
-          auto completion = promise.completion;
-          void* completion_ctx = promise.completion_ctx;
-          promise.state.store(completed, std::memory_order_release);
-          if (completion != nullptr) {
-            completion(completion_ctx);
+          // Release the dispatch guard before publishing completion so a caller
+          // that observes await_ready() can dispatch to the same machine again.
+          if (promise.completion != nullptr) {
+            promise.completion(promise.completion_ctx);
           }
+          promise.state.store(completed, std::memory_order_release);
           return continuation;
         }
         void await_resume() const noexcept {}
@@ -629,73 +619,65 @@ class bool_task {
   bool immediate_value_ = false;
 };
 
-template <class T, class TSchedulerPolicy = policy::coroutine_scheduler<policy::fifo_scheduler<>>,
-          class TAllocatorPolicy = policy::coroutine_allocator<policy::pooled_coroutine_allocator<>>, class... TPolicies>
-class co_sm {
- public:
-  static_assert(policy::valid_coroutine_scheduler_policy<TSchedulerPolicy>, "scheduler_policy must define scheduler_type");
-  static_assert(policy::valid_coroutine_allocator_policy<TAllocatorPolicy>, "allocator_policy must define allocator_type");
+}  // namespace utility
 
-  using model_type = T;
-  using scheduler_policy_type = TSchedulerPolicy;
-  using scheduler_type = typename scheduler_policy_type::scheduler_type;
-  using allocator_policy_type = TAllocatorPolicy;
-  using allocator_type = typename allocator_policy_type::allocator_type;
-  using state_machine_type = sm<T, TPolicies...>;
+namespace back {
 
-  static_assert(policy::valid_coroutine_scheduler<scheduler_type>, "scheduler_type must provide schedule(fn)");
-  static_assert(policy::coroutine_scheduler_contract<scheduler_type>,
-                "scheduler_type must be strict run-to-completion or an async coroutine scheduler");
-  static_assert(policy::valid_coroutine_allocator<allocator_type>,
-                "allocator_type must provide allocate(size, alignment) and noexcept deallocate(ptr, size, alignment)");
+// Coroutine dispatch for sm<T, scheduler<TScheduler>, ...>. Declared in sml.hpp
+// and defined here so the core header stays C++14.
+template <class TScheduler>
+struct async_dispatch {
+  static_assert(utility::policy::valid_coroutine_scheduler<TScheduler>, "scheduler must provide schedule(fn)");
+  static_assert(utility::policy::coroutine_scheduler_contract<TScheduler>,
+                "scheduler must be strict run-to-completion or an async coroutine scheduler");
 
-  co_sm() = default;
-  ~co_sm() = default;
+  // Per-machine dispatch state stored by sm next to the scheduler.
+  struct state {
+    state() = default;
+    state(const state&) noexcept {}
+    state& operator=(const state&) noexcept {
+      external_dispatch_depth = 0;
+      active.store(false, std::memory_order_relaxed);
+      return *this;
+    }
 
-  co_sm(const co_sm&) = default;
-  co_sm(co_sm&&) = default;
-  co_sm& operator=(const co_sm&) = default;
-  co_sm& operator=(co_sm&&) = default;
+    bool try_acquire() noexcept { return !active.exchange(true, std::memory_order_acquire); }
+    void release() noexcept { active.store(false, std::memory_order_release); }
 
-  explicit co_sm(const scheduler_type& scheduler) : scheduler_(scheduler) {}
-  explicit co_sm(const allocator_type& allocator) : allocator_(allocator) {}
+    // Called by bool_task::promise_type when the dispatch coroutine completes.
+    void release_async_dispatch_active() noexcept {
+      if constexpr (utility::policy::async_coroutine_scheduler_contract<TScheduler>) {
+        release();
+      }
+    }
 
-  co_sm(const scheduler_type& scheduler, const allocator_type& allocator) : scheduler_(scheduler), allocator_(allocator) {}
+    // Depth of synchronous external-completion dispatches on this machine;
+    // nested calls (actions re-entering process_event) skip reset/sweep/drain
+    // so the outermost dispatch's run-to-completion drain stays intact.
+    std::size_t external_dispatch_depth = 0;
+    std::atomic<bool> active{false};
+  };
 
-  template <class... TArgs>
-  explicit co_sm(TArgs&&... args) : state_machine_(std::forward<TArgs>(args)...) {}
-
-  template <class... TArgs>
-  co_sm(const scheduler_type& scheduler, TArgs&&... args)
-      : state_machine_(std::forward<TArgs>(args)...), scheduler_(scheduler) {}
-
-  template <class... TArgs>
-  co_sm(const allocator_type& allocator, TArgs&&... args)
-      : state_machine_(std::forward<TArgs>(args)...), allocator_(allocator) {}
-
-  template <class... TArgs>
-  co_sm(const scheduler_type& scheduler, const allocator_type& allocator, TArgs&&... args)
-      : state_machine_(std::forward<TArgs>(args)...), scheduler_(scheduler), allocator_(allocator) {}
-
-  template <class TEvent>
-  bool process_event(const TEvent& event) {
-    if constexpr (policy::external_completion_scheduler_contract<scheduler_type>) {
+  template <class TSM, class TEvent>
+  static bool process_event(TSM& sm, const TEvent& event) {
+    if constexpr (utility::policy::external_completion_scheduler_contract<TScheduler>) {
       // Only the outermost dispatch owns the completion machinery: a nested
       // synchronous process_event from a transition action dispatches its
       // trigger plainly, and any sources it marks required are drained by the
       // enclosing dispatch before that dispatch returns. Resetting or
       // draining from the nested call would clear required bits the outer
       // drain still needs.
-      if (external_dispatch_depth_ > 0) {
-        return state_machine_.process_event(event);
+      auto& dispatch = sm.dispatch_state_;
+      if (dispatch.external_dispatch_depth > 0) {
+        return sm.process_event_impl(event);
       }
 
       struct dispatch_depth_scope {
         std::size_t& depth;
         ~dispatch_depth_scope() noexcept { --depth; }
       };
-      ++external_dispatch_depth_;
-      dispatch_depth_scope depth_scope{external_dispatch_depth_};
+      ++dispatch.external_dispatch_depth;
+      dispatch_depth_scope depth_scope{dispatch.external_dispatch_depth};
 
       // Synchronous drive with zero coroutine machinery: (1) commit sweep -
       // completions that fired between dispatches are delivered as explicit
@@ -708,157 +690,134 @@ class co_sm {
       // thread. Required bits left by a previous aborted dispatch are
       // cleared first. The fast path (no fired and no required sources) costs
       // one sweep scan plus one mask check over the inline dispatch.
-      scheduler_.reset_dispatch_state();
-      using completion_event_t = typename scheduler_type::completion_event;
-      for (std::size_t index = scheduler_.sweep_next_fired(); index != scheduler_type::npos;
-           index = scheduler_.sweep_next_fired()) {
-        (void)state_machine_.process_event(completion_event_t{index});
+      auto& scheduler = sm.scheduler();
+      scheduler.reset_dispatch_state();
+      using completion_event_t = typename TScheduler::completion_event;
+      for (std::size_t index = scheduler.sweep_next_fired(); index != TScheduler::npos; index = scheduler.sweep_next_fired()) {
+        (void)sm.process_event_impl(completion_event_t{index});
       }
-      bool accepted = state_machine_.process_event(event);
-      while (scheduler_.has_required()) {
-        const std::size_t index = scheduler_.consume_next_fired_required();
-        if (index == scheduler_type::npos) {
-          scheduler_.wait_any();
+      bool accepted = sm.process_event_impl(event);
+      while (scheduler.has_required()) {
+        const std::size_t index = scheduler.consume_next_fired_required();
+        if (index == TScheduler::npos) {
+          scheduler.wait_any();
           continue;
         }
-        accepted = state_machine_.process_event(completion_event_t{index}) && accepted;
+        accepted = sm.process_event_impl(completion_event_t{index}) && accepted;
       }
       return accepted;
-    } else if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
-      if (!async_dispatch_active_.try_acquire()) {
-        if (active_async_dispatch_owner_ == this) {
-          return state_machine_.process_event(event);
+    } else if constexpr (utility::policy::async_coroutine_scheduler_contract<TScheduler>) {
+      auto& dispatch = sm.dispatch_state_;
+      if (!dispatch.try_acquire()) {
+        if (active_owner == &sm) {
+          return sm.process_event_impl(event);
         }
         return false;
       }
       struct active_reset {
-        async_dispatch_flag& active;
+        state& active;
         ~active_reset() noexcept { active.release(); }
-      } reset{async_dispatch_active_};
-      struct active_owner_scope {
-        const co_sm* previous;
-        explicit active_owner_scope(const co_sm* current) noexcept : previous(active_async_dispatch_owner_) {
-          active_async_dispatch_owner_ = current;
-        }
-        ~active_owner_scope() noexcept { active_async_dispatch_owner_ = previous; }
-      } owner{this};
-      return state_machine_.process_event(event);
+      } reset{dispatch};
+      active_owner_scope owner{&sm};
+      return sm.process_event_impl(event);
     } else {
-      return state_machine_.process_event(event);
+      return sm.process_event_impl(event);
     }
   }
 
-  template <class TEvent>
-  bool_task process_event_async(TEvent&& event) {
-    if constexpr (policy::external_completion_scheduler_contract<scheduler_type>) {
-      using event_t = typename std::decay<TEvent>::type;
+  template <class TSM, class TEvent>
+  static utility::bool_task process_event_async(TSM& sm, TEvent&& event) {
+    using event_t = typename std::decay<TEvent>::type;
+    if constexpr (utility::policy::external_completion_scheduler_contract<TScheduler>) {
       event_t event_copy(static_cast<TEvent&&>(event));
-      return bool_task::from_value(process_event(event_copy));
-    } else if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
-      using event_t = typename std::decay<TEvent>::type;
+      return utility::bool_task::from_value(process_event(sm, event_copy));
+    } else if constexpr (std::is_same_v<TScheduler, utility::policy::inline_scheduler>) {
       event_t event_copy(static_cast<TEvent&&>(event));
-      return bool_task::from_value(state_machine_.process_event(event_copy));
-    } else if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
-      if (!async_dispatch_active_.try_acquire()) {
-        return bool_task::from_value(false);
+      return utility::bool_task::from_value(sm.process_event_impl(event_copy));
+    } else if constexpr (utility::policy::async_coroutine_scheduler_contract<TScheduler>) {
+      auto& dispatch = sm.dispatch_state_;
+      if (!dispatch.try_acquire()) {
+        return utility::bool_task::from_value(false);
       }
-      using event_t = typename std::decay<TEvent>::type;
 #if !BOOST_SML_DISABLE_EXCEPTIONS
       try {
         event_t event_copy(static_cast<TEvent&&>(event));
-        return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
+        return process_event_async_impl(std::allocator_arg, allocator_of(sm), dispatch, sm, static_cast<event_t&&>(event_copy));
       } catch (...) {
-        async_dispatch_active_.release();
+        dispatch.release();
         throw;
       }
 #else
       event_t event_copy(static_cast<TEvent&&>(event));
-      return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
+      return process_event_async_impl(std::allocator_arg, allocator_of(sm), dispatch, sm, static_cast<event_t&&>(event_copy));
 #endif
     } else {
-      using event_t = typename std::decay<TEvent>::type;
       event_t event_copy(static_cast<TEvent&&>(event));
-      if constexpr (policy::has_try_run_immediate<scheduler_type>) {
+      if constexpr (utility::policy::has_try_run_immediate<TScheduler>) {
         bool accepted = false;
-        if (scheduler_.try_run_immediate(
-                [this, &event_copy, &accepted]() { accepted = state_machine_.process_event(event_copy); })) {
-          return bool_task::from_value(accepted);
+        if (sm.scheduler().try_run_immediate(
+                [&sm, &event_copy, &accepted]() { accepted = sm.process_event_impl(event_copy); })) {
+          return utility::bool_task::from_value(accepted);
         }
       }
 
-      return process_event_async_impl(std::allocator_arg, allocator_, *this, static_cast<event_t&&>(event_copy));
+      return process_event_async_impl(std::allocator_arg, allocator_of(sm), sm.dispatch_state_, sm,
+                                      static_cast<event_t&&>(event_copy));
     }
   }
 
-  template <class TState>
-  bool is(const TState& state = TState{}) const {
-    return state_machine_.is(state);
-  }
-
-  template <class TVisitor>
-  void visit_current_states(TVisitor&& visitor) {
-    state_machine_.visit_current_states(std::forward<TVisitor>(visitor));
-  }
-
-  scheduler_type& scheduler() noexcept { return scheduler_; }
-  const scheduler_type& scheduler() const noexcept { return scheduler_; }
-  allocator_type& allocator() noexcept { return allocator_; }
-  const allocator_type& allocator() const noexcept { return allocator_; }
-
- protected:
-  state_machine_type& raw_sm() { return state_machine_; }
-  const state_machine_type& raw_sm() const { return state_machine_; }
-
  private:
-  template <class TEvent>
-  static bool_task process_event_async_impl(std::allocator_arg_t, allocator_type& allocator, co_sm& self, TEvent&& event) {
-    (void)allocator;
-    co_return co_await process_event_awaitable<typename std::decay<TEvent>::type>{self, static_cast<TEvent&&>(event)};
+  inline static thread_local const void* active_owner = nullptr;
+
+  struct active_owner_scope {
+    const void* previous;
+    explicit active_owner_scope(const void* current) noexcept : previous(active_owner) { active_owner = current; }
+    ~active_owner_scope() noexcept { active_owner = previous; }
+  };
+
+  template <class TSM>
+  static decltype(auto) allocator_of(TSM& sm) noexcept {
+    if constexpr (requires { sm.allocator_; }) {
+      static_assert(utility::policy::valid_coroutine_allocator<std::remove_reference_t<decltype(sm.allocator_)>>,
+                    "allocator must provide allocate(size, alignment) and noexcept deallocate(ptr, size, alignment)");
+      return (sm.allocator_);
+    } else {
+      static utility::policy::heap_coroutine_allocator heap{};
+      return (heap);
+    }
+  }
+
+  // The promise takes `dispatch` as its owner and releases the async guard when
+  // the coroutine completes. The event is taken by reference and moved inside
+  // the body (before the first suspension) so a throwing move lands in the task.
+  template <class TAllocator, class TSM, class TEvent>
+  static utility::bool_task process_event_async_impl(std::allocator_arg_t, TAllocator&, state&, TSM& sm, TEvent&& event) {
+    co_return co_await process_event_awaitable<TSM, typename std::decay<TEvent>::type>{sm, static_cast<TEvent&&>(event)};
   }  // GCOVR_EXCL_LINE
 
-  // External-completion dispatch: (1) commit sweep — completions fired between
-  // dispatches are delivered as explicit completion events in ascending source
-  // order before the trigger runs; (2) the trigger event dispatches; (3) any
-  // sources the machine marked required are awaited (suspending this coroutine)
-  // and re-entered as completion events until none remain. The caller's drive
-  // loop in process_event resumes the coroutine on the dispatching thread only.
-
-  template <class TEvent>
+  template <class TSM, class TEvent>
   struct process_event_awaitable {
-    co_sm& self;
+    TSM& sm;
     TEvent event_value;
     bool accepted = false;
 #if !BOOST_SML_DISABLE_EXCEPTIONS
     std::exception_ptr exception{};
 #endif
 
-    bool await_ready() noexcept {
-      if constexpr (std::is_same_v<scheduler_type, policy::inline_scheduler>) {
-        accepted = self.state_machine_.process_event(event_value);
-        return true;
-      }
-      return false;
-    }
+    bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) {
-      self.scheduler_.schedule([this, handle]() mutable {
-        struct active_owner_scope {
-          const co_sm* previous;
-          explicit active_owner_scope(const co_sm* current) noexcept : previous(active_async_dispatch_owner_) {
-            active_async_dispatch_owner_ = current;
-          }
-          ~active_owner_scope() noexcept { active_async_dispatch_owner_ = previous; }
-        };
+      sm.scheduler().schedule([this, handle]() mutable {
         {
-          active_owner_scope owner{&self};
+          active_owner_scope owner{&sm};
 #if !BOOST_SML_DISABLE_EXCEPTIONS
           try {
-            accepted = self.state_machine_.process_event(event_value);
+            accepted = sm.process_event_impl(event_value);
           } catch (...) {
             exception = std::current_exception();
           }
 #else
-          accepted = self.state_machine_.process_event(event_value);
+          accepted = sm.process_event_impl(event_value);
 #endif
         }
         handle.resume();
@@ -874,45 +833,13 @@ class co_sm {
       return accepted;
     }
   };
-
-  state_machine_type state_machine_{};
-  scheduler_type scheduler_{};
-  allocator_type allocator_{};
-
-  void release_async_dispatch_active() noexcept {
-    if constexpr (policy::async_coroutine_scheduler_contract<scheduler_type>) {
-      async_dispatch_active_.release();
-    }
-  }
-
-  friend struct bool_task::promise_type;
-
-  struct async_dispatch_flag {
-    async_dispatch_flag() = default;
-    async_dispatch_flag(const async_dispatch_flag&) noexcept {}
-    async_dispatch_flag& operator=(const async_dispatch_flag&) noexcept {
-      active.store(false, std::memory_order_relaxed);
-      return *this;
-    }
-
-    bool try_acquire() noexcept { return !active.exchange(true, std::memory_order_acquire); }
-    void release() noexcept { active.store(false, std::memory_order_release); }
-
-    std::atomic<bool> active{false};
-  };
-  // Depth of synchronous external-completion dispatches on this machine;
-  // nested calls (actions re-entering process_event) skip reset/sweep/drain
-  // so the outermost dispatch's run-to-completion drain stays intact.
-  std::size_t external_dispatch_depth_ = 0;
-  async_dispatch_flag async_dispatch_active_{};
-  inline static thread_local const co_sm* active_async_dispatch_owner_ = nullptr;
 };
 
-}  // namespace utility
+}  // namespace back
 
 BOOST_SML_NAMESPACE_END
 #endif
 
-#undef BOOST_SML_UTILITY_CO_SM_LANG
+#undef BOOST_SML_UTILITY_COROUTINE_LANG
 
-#endif  // BOOST_SML_UTILITY_CO_SM_HPP
+#endif  // BOOST_SML_UTILITY_COROUTINE_HPP

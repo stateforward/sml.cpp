@@ -28,7 +28,7 @@ This fork addresses critical bugs, adds utilities for high-throughput and async 
 ### New features
 
 - **Completion transitions** (`completion<T>`) -- post-event transitions with origin event propagation
-- **Coroutine state machines** (`co_sm`) -- C++20 coroutine-driven SM with configurable scheduler and allocator policies
+- **Coroutine dispatch** (`sml::scheduler<T>` / `sml::allocator<T>`) -- C++20 `process_event_async` on `sm` with configurable scheduler and allocator
 - **`thread_pool_scheduler`** -- opt-in C++20 multi-consumer work pool for nonblocking coroutine dispatch plus explicit blocking fork/join APIs (warm workers, fixed task ring, no allocation on dispatch)
 - **`sm_pool`** -- pool-based container for managing thousands of SM instances with indexed and batch dispatch
 - **`dispatch_table`** -- compile-time dispatch table for ID-based event routing at zero runtime overhead
@@ -126,22 +126,23 @@ cl /std:c++14 /Ox /W3 tcp_release.cpp
 
 ## Utilities
 
-<!-- utility APIs from include/boost/sml/utility/co_sm.hpp and include/boost/sml/utility/thread_pool_scheduler.hpp -->
+<!-- utility APIs from include/boost/sml/utility/coroutine.hpp and include/boost/sml/utility/thread_pool_scheduler.hpp -->
 
-### co_sm (C++20)
+### Coroutine dispatch (C++20)
 
-Coroutine-driven state machine wrapper with configurable scheduling and allocation policies. Requires C++20 with coroutine support.
+Give `sm` a `sml::scheduler<T>` policy (and optionally `sml::allocator<T>`) and include the coroutine utility header to get `process_event_async`. Requires C++20 with coroutine support; `sml.hpp` itself stays C++14.
 
 ```cpp
-#include <stateforward/sml/utility/co_sm.hpp>
+#include <stateforward/sml/utility/coroutine.hpp>
 #include <stateforward/sml/utility/thread_pool_scheduler.hpp>
 
 namespace utility = sml::utility;
 
-// Default: FIFO scheduler, pooled coroutine allocator
-utility::co_sm<my_fsm> sm{};
+sml::sm<my_fsm,
+        sml::scheduler<utility::policy::fifo_scheduler<>>,
+        sml::allocator<utility::policy::pooled_coroutine_allocator<>>> sm{};
 
-// Synchronous dispatch (same as regular sm)
+// Synchronous dispatch (unchanged)
 sm.process_event(my_event{});
 
 // Asynchronous dispatch via coroutine
@@ -152,30 +153,32 @@ if (task.await_ready()) {
   bool accepted = task.result();
 }
 
+sm.scheduler();  // the stored scheduler instance
+
 // Thread-pool dispatch starts work on a worker and lets the caller await later.
 using pool_scheduler = utility::policy::thread_pool_scheduler<4>;
-utility::co_sm<my_fsm, utility::policy::coroutine_scheduler<pool_scheduler>> pooled{};
+sml::sm<my_fsm, sml::scheduler<pool_scheduler>> pooled{};
 auto pooled_task = pooled.process_event_async(my_event{});
 // ...do local work...
 while (!pooled_task.await_ready()) {}
 bool pooled_accepted = pooled_task.result();
 ```
 
-**Scheduler policies:**
+**Schedulers** (`sml::scheduler<T>`; any `T` with `schedule(fn)` and the FIFO / single-consumer / run-to-completion flags):
 
-| Policy | Description |
+| Scheduler | Description |
 |--------|-------------|
-| `inline_scheduler` | Runs tasks immediately |
-| `fifo_scheduler<Capacity, InlineBytes>` | FIFO queue with bounded inline storage (default) |
+| `inline_scheduler` | Runs tasks immediately, no coroutine frame |
+| `fifo_scheduler<Capacity, InlineBytes>` | FIFO queue with bounded inline storage |
 | `thread_pool_scheduler<Workers, Capacity, InlineBytes>` | Starts `process_event_async` on worker threads and returns a task to await later; concurrent same-actor overlap is rejected |
-| `coroutine_scheduler<TScheduler>` | Wraps any scheduler for the coroutine path |
 
 `thread_pool_scheduler::schedule(fn)` is nonblocking. Use `run_or_schedule_and_wait(fn)` or `thread_pool_scheduler::join_group` at RTC call sites that need an immediate join. Destroying an incomplete `bool_task` is a hard contract violation and terminates; keep the task alive until it is ready or awaited.
 
-**Allocator policies:**
+**Allocators** (`sml::allocator<T>`; optional, coroutine frames use the heap without one):
 
-| Policy | Description |
+| Allocator | Description |
 |--------|-------------|
+| `heap_coroutine_allocator` | Aligned `operator new` / `delete` |
 | `pooled_coroutine_allocator<Size, Count>` | Fixed-size pool with heap fallback |
 
 ### sm_pool
@@ -395,7 +398,7 @@ ctest --test-dir build
 | `SML_BUILD_EXAMPLES` | OFF | Build example targets |
 | `SML_BUILD_TESTS` | OFF | Build test targets |
 
-**Supported compilers:** GCC 6+, Clang 3.5+, MSVC 2015+. Requires C++14 minimum (C++20 for `co_sm`).
+**Supported compilers:** GCC 6+, Clang 3.5+, MSVC 2015+. Requires C++14 minimum (C++20 for `process_event_async`).
 
 ---
 

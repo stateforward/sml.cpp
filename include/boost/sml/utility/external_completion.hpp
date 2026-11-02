@@ -42,7 +42,7 @@ BOOST_SML_NAMESPACE_BEGIN
 namespace utility {
 
 // Generic completion trigger delivered into a machine's transition table by a
-// co_sm running an external-completion scheduler policy. source_index names the
+// sm running an external-completion scheduler (sml::scheduler<T>). source_index names the
 // completion_source that fired; machines map it onto domain state (for example
 // a buffer slot) via their own guards and actions.
 struct completion {
@@ -86,7 +86,7 @@ class completion_source {
   std::counting_semaphore<>* wakeup_ = nullptr;
 };
 
-// Scheduler policy that lets a co_sm dispatch block on completions fired by
+// Scheduler that lets an sm dispatch block on completions fired by
 // other threads while still returning only when the whole dispatch is done:
 //
 //   1. commit sweep — completions that fired between dispatches are delivered

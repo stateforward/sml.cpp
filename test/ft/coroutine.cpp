@@ -6,7 +6,7 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 //
 #include <boost/sml.hpp>
-#include <boost/sml/utility/co_sm.hpp>
+#include <boost/sml/utility/coroutine.hpp>
 #include <cstddef>
 #include <functional>
 #include <new>
@@ -15,7 +15,7 @@
 
 namespace sml = boost::sml;
 
-#if BOOST_SML_UTILITY_CO_SM_ENABLED
+#if BOOST_SML_UTILITY_COROUTINE_ENABLED
 namespace utility = sml::utility;
 
 struct e1 {};
@@ -126,8 +126,8 @@ test bool_task_promise_helpers = [] {
   utility::bool_task::promise_type::deallocate_frame(nullptr);
 };
 
-test co_sm_inline_scheduler_path = [] {
-  using sm_t = utility::co_sm<c, utility::policy::coroutine_scheduler<utility::policy::inline_scheduler>>;
+test sm_inline_scheduler_path = [] {
+  using sm_t = sml::sm<c, sml::scheduler<utility::policy::inline_scheduler>>;
 
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
@@ -137,8 +137,9 @@ test co_sm_inline_scheduler_path = [] {
   expect(sm.is(s1));
 };
 
-test co_sm_sync_process_event_and_visitor = [] {
-  utility::co_sm<c> sm{};
+test sm_scheduler_policy_sync_process_event_and_visitor = [] {
+  sml::sm<c, sml::scheduler<utility::policy::fifo_scheduler<>>, sml::allocator<utility::policy::pooled_coroutine_allocator<>>>
+      sm{};
   expect(sm.is(idle));
   expect(sm.process_event(e1{}));
   expect(sm.is(s1));
@@ -159,9 +160,15 @@ struct scheduler_without_try_run_immediate {
   }
 };
 
+// Counters are static: sm keeps its allocator private, so tests observe it from outside.
 struct counting_allocator {
-  std::size_t allocate_calls = 0;
-  std::size_t deallocate_calls = 0;
+  static inline std::size_t allocate_calls = 0;
+  static inline std::size_t deallocate_calls = 0;
+
+  static void reset() noexcept {
+    allocate_calls = 0;
+    deallocate_calls = 0;
+  }
 
   void* allocate(const std::size_t size, const std::size_t alignment) {
     ++allocate_calls;
@@ -175,9 +182,9 @@ struct counting_allocator {
   }
 };
 
-test co_sm_coroutine_path_uses_allocator = [] {
-  using sm_t = utility::co_sm<c, utility::policy::coroutine_scheduler<scheduler_without_try_run_immediate>,
-                              utility::policy::coroutine_allocator<counting_allocator>>;
+test sm_coroutine_path_uses_allocator = [] {
+  counting_allocator::reset();
+  using sm_t = sml::sm<c, sml::scheduler<scheduler_without_try_run_immediate>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
 
@@ -186,22 +193,22 @@ test co_sm_coroutine_path_uses_allocator = [] {
     expect(task.result());
   }
 
-  expect(1u == sm.allocator().allocate_calls);
-  expect(1u == sm.allocator().deallocate_calls);
+  expect(1u == counting_allocator::allocate_calls);
+  expect(1u == counting_allocator::deallocate_calls);
   expect(sm.is(s1));
 };
 
-test co_sm_default_fifo_try_run_immediate_path = [] {
-  using sm_t = utility::co_sm<c, utility::policy::coroutine_scheduler<utility::policy::fifo_scheduler<8, 64>>,
-                              utility::policy::coroutine_allocator<counting_allocator>>;
+test sm_default_fifo_try_run_immediate_path = [] {
+  counting_allocator::reset();
+  using sm_t = sml::sm<c, sml::scheduler<utility::policy::fifo_scheduler<8, 64>>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
 
   expect(task.await_ready());
   expect(task.result());
-  expect(0u == sm.allocator().allocate_calls);
-  expect(0u == sm.allocator().deallocate_calls);
+  expect(0u == counting_allocator::allocate_calls);
+  expect(0u == counting_allocator::deallocate_calls);
   expect(sm.is(s1));
 };
 
@@ -226,9 +233,8 @@ struct deferred_scheduler {
   }
 };
 
-test co_sm_deferred_scheduler_not_done_then_done = [] {
-  using sm_t = utility::co_sm<c, utility::policy::coroutine_scheduler<deferred_scheduler>,
-                              utility::policy::coroutine_allocator<counting_allocator>>;
+test sm_deferred_scheduler_not_done_then_done = [] {
+  using sm_t = sml::sm<c, sml::scheduler<deferred_scheduler>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
@@ -245,6 +251,17 @@ test co_sm_deferred_scheduler_not_done_then_done = [] {
   expect(got_logic_error);
 #endif
 
+  sm.scheduler().run_pending();
+  expect(task.result());
+  expect(sm.is(s1));
+};
+
+test sm_scheduler_without_allocator_uses_default_frame_allocation = [] {
+  using sm_t = sml::sm<c, sml::scheduler<deferred_scheduler>>;
+
+  sm_t sm{};
+  auto task = sm.process_event_async(e1{});
+  expect(!task.await_ready());
   sm.scheduler().run_pending();
   expect(task.result());
   expect(sm.is(s1));
@@ -269,8 +286,7 @@ test bool_task_exception_rethrow = [] {
 #endif
 
 test bool_task_await_suspend_with_non_empty_handle = [] {
-  using sm_t = utility::co_sm<c, utility::policy::coroutine_scheduler<deferred_scheduler>,
-                              utility::policy::coroutine_allocator<counting_allocator>>;
+  using sm_t = sml::sm<c, sml::scheduler<deferred_scheduler>, sml::allocator<counting_allocator>>;
 
   sm_t sm{};
   auto task = sm.process_event_async(e1{});
@@ -298,10 +314,9 @@ struct null_allocator {
   void deallocate(void*, std::size_t, std::size_t) noexcept {}
 };
 
-test co_sm_allocator_failure_throws_bad_alloc = [] {
+test sm_allocator_failure_throws_bad_alloc = [] {
 #if !BOOST_SML_DISABLE_EXCEPTIONS
-  using sm_t = utility::co_sm<c, utility::policy::coroutine_scheduler<scheduler_without_try_run_immediate>,
-                              utility::policy::coroutine_allocator<null_allocator>>;
+  using sm_t = sml::sm<c, sml::scheduler<scheduler_without_try_run_immediate>, sml::allocator<null_allocator>>;
 
   sm_t sm{};
   bool got_bad_alloc = false;
@@ -317,6 +332,6 @@ test co_sm_allocator_failure_throws_bad_alloc = [] {
 
 #else
 
-test co_sm_disabled_without_coroutines = [] { expect(true); };
+test sm_coroutine_policies_disabled_without_coroutines = [] { expect(true); };
 
 #endif

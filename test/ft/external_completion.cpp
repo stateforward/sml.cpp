@@ -8,7 +8,7 @@
 #include <array>
 #include <atomic>
 #include <boost/sml.hpp>
-#include <boost/sml/utility/co_sm.hpp>
+#include <boost/sml/utility/coroutine.hpp>
 #include <boost/sml/utility/external_completion.hpp>
 #include <boost/sml/utility/thread_pool_scheduler.hpp>
 #include <chrono>
@@ -18,7 +18,7 @@
 
 namespace sml = boost::sml;
 
-#if BOOST_SML_UTILITY_EXTERNAL_COMPLETION_ENABLED && BOOST_SML_UTILITY_CO_SM_ENABLED && \
+#if BOOST_SML_UTILITY_EXTERNAL_COMPLETION_ENABLED && BOOST_SML_UTILITY_COROUTINE_ENABLED && \
     BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
 namespace utility = sml::utility;
 
@@ -122,14 +122,12 @@ struct machine {
   }
 };
 
-using co_sm_t =
-    utility::co_sm<machine, utility::policy::coroutine_scheduler<scheduler_t>,
-                   utility::policy::coroutine_allocator<utility::policy::pooled_coroutine_allocator<>>, test_context>;
+using machine_t = sml::sm<machine, sml::scheduler<scheduler_t>, sml::allocator<utility::policy::pooled_coroutine_allocator<>>>;
 
 struct fixture {
   pool_t pool{};
   test_context context{};
-  co_sm_t machine_instance;
+  machine_t machine_instance;
 
   fixture() : machine_instance{context} {
     context.scheduler = &machine_instance.scheduler();
@@ -265,11 +263,10 @@ test external_completion_aborted_dispatch_does_not_poison_next = [] {
     }
   };
 
-  using throwing_co_sm =
-      utility::co_sm<throwing_machine, utility::policy::coroutine_scheduler<scheduler_t>,
-                     utility::policy::coroutine_allocator<utility::policy::pooled_coroutine_allocator<>>, test_context>;
+  using throwing_sm_t =
+      sml::sm<throwing_machine, sml::scheduler<scheduler_t>, sml::allocator<utility::policy::pooled_coroutine_allocator<>>>;
   test_context context{};
-  throwing_co_sm machine{context};
+  throwing_sm_t machine{context};
   context.scheduler = &machine.scheduler();
 
   bool threw = false;
@@ -331,16 +328,15 @@ test external_completion_nested_dispatch_preserves_outer_drain = [] {
     }
   };
 
-  using nested_co_sm =
-      utility::co_sm<nested_machine, utility::policy::coroutine_scheduler<scheduler_t>,
-                     utility::policy::coroutine_allocator<utility::policy::pooled_coroutine_allocator<>>, nested_context>;
+  using nested_sm_t =
+      sml::sm<nested_machine, sml::scheduler<scheduler_t>, sml::allocator<utility::policy::pooled_coroutine_allocator<>>>;
   pool_t pool{};
   nested_context context{};
-  nested_co_sm machine{context};
+  nested_sm_t machine{context};
   context.scheduler = &machine.scheduler();
   context.pool = &pool;
   context.self = &machine;
-  context.nested_probe = [](void* self) { return static_cast<nested_co_sm*>(self)->process_event(e_probe{}); };
+  context.nested_probe = [](void* self) { return static_cast<nested_sm_t*>(self)->process_event(e_probe{}); };
 
   expect(machine.process_event(e_require_then_nested_probe{}));
 

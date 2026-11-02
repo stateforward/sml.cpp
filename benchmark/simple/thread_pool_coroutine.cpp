@@ -8,7 +8,7 @@
 #include <array>
 #include <atomic>
 #include <boost/sml.hpp>
-#include <boost/sml/utility/co_sm.hpp>
+#include <boost/sml/utility/coroutine.hpp>
 #include <boost/sml/utility/thread_pool_scheduler.hpp>
 #include <chrono>
 #include <cstdint>
@@ -63,13 +63,11 @@ void print_duration(const std::chrono::nanoseconds elapsed, const std::size_t di
   std::cout << "execution speed: " << total_ms << "ms (" << ns_per_dispatch << "ns/dispatch)" << std::endl;
 }
 
-#if BOOST_SML_UTILITY_CO_SM_ENABLED && BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
+#if BOOST_SML_UTILITY_COROUTINE_ENABLED && BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
 template <class machine, std::size_t children_count, std::size_t rounds>
 void run_case(const char* label) {
   using scheduler_t = sml::utility::policy::thread_pool_scheduler<1, 1024, 128>;
-  using child_sm_t = sml::utility::co_sm<
-      machine, sml::utility::policy::coroutine_scheduler<scheduler_t>,
-      sml::utility::policy::coroutine_allocator<sml::utility::policy::pooled_coroutine_allocator<4096, children_count * 2>>>;
+  using child_sm_t = sml::sm<machine, sml::scheduler<scheduler_t>, sml::allocator<sml::utility::policy::pooled_coroutine_allocator<4096, children_count * 2>>>;
 
   constexpr std::size_t dispatches = children_count * rounds;
 
@@ -132,7 +130,7 @@ void run_case(const char* label) {
 #endif
 
 int main() {
-#if BOOST_SML_UTILITY_CO_SM_ENABLED && BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
+#if BOOST_SML_UTILITY_COROUTINE_ENABLED && BOOST_SML_UTILITY_THREAD_POOL_SCHEDULER_ENABLED
   constexpr std::size_t children_count = 8u;
   run_case<noop_child, children_count, 10000>("noop");
   run_case<sleep_child, children_count, 1000>("10us work");

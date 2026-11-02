@@ -12,7 +12,7 @@
 #if defined(__ICCARM__) && __IAR_SYSTEMS_ICC__ < 8
 #error "[Boost::ext].SML requires C++14 support (IAR C/C++ ARM 8.1+)"
 #endif
-#define BOOST_SML_VERSION 1'1'13
+#define BOOST_SML_VERSION 2'0'0
 #define BOOST_SML_NAMESPACE_BEGIN \
   namespace boost {               \
   inline namespace ext {          \
@@ -1756,6 +1756,22 @@ struct thread_safe : aux::pair<thread_safety_policy__, thread_safe<TLock>> {
 }  // namespace policies
 }  // namespace back
 namespace back {
+namespace policies {
+struct scheduler_policy__ {};
+template <class T>
+struct scheduler : aux::pair<scheduler_policy__, scheduler<T>> {
+  using type = T;
+};
+struct allocator_policy__ {};
+template <class T>
+struct allocator : aux::pair<allocator_policy__, allocator<T>> {
+  using type = T;
+};
+}  // namespace policies
+template <class TScheduler>
+struct async_dispatch;
+}  // namespace back
+namespace back {
 struct no_policy : policies::thread_safety_policy__ {
   using type = no_policy;
   template <class>
@@ -1781,6 +1797,8 @@ struct sm_policy {
       decltype(get_policy<no_policy, policies::process_queue_policy__>((aux::inherit<TPolicies...> *)0));
   using logger_policy = decltype(get_policy<no_policy, policies::logger_policy__>((aux::inherit<TPolicies...> *)0));
   using testing_policy = decltype(get_policy<no_policy, policies::testing_policy__>((aux::inherit<TPolicies...> *)0));
+  using scheduler_policy = decltype(get_policy<no_policy, policies::scheduler_policy__>((aux::inherit<TPolicies...> *)0));
+  using allocator_policy = decltype(get_policy<no_policy, policies::allocator_policy__>((aux::inherit<TPolicies...> *)0));
   using dont_instantiate_statemachine_class_policy = decltype(get_policy<no_policy, policies::dont_instantiate_statemachine_class_policy__>((aux::inherit<TPolicies...> *)0));
   using default_dispatch_policy = policies::switch_stm;
   using dispatch_policy =
@@ -2209,9 +2227,26 @@ struct sm_impl : aux::conditional_t<aux::should_not_subclass_statemachine_class<
   typename defer_t::const_iterator defer_it_{};
   typename defer_t::const_iterator defer_end_{};
 };
+template <class TScheduler, class TAllocator>
+struct sm_scheduling {
+  TScheduler scheduler_{};
+  TAllocator allocator_{};
+  typename async_dispatch<TScheduler>::state dispatch_state_{};
+};
+template <class TScheduler>
+struct sm_scheduling<TScheduler, no_policy> {
+  TScheduler scheduler_{};
+  typename async_dispatch<TScheduler>::state dispatch_state_{};
+};
+template <>
+struct sm_scheduling<no_policy, no_policy> {};
 template <class Tsm>
-class sm {
+class sm : sm_scheduling<typename Tsm::scheduler_policy::type, typename Tsm::allocator_policy::type> {
   using sm_t = typename Tsm::sm;
+  using scheduler_t = typename Tsm::scheduler_policy::type;
+  using allocator_t = typename Tsm::allocator_policy::type;
+  static_assert(aux::is_same<no_policy, allocator_t>::value || !aux::is_same<no_policy, scheduler_t>::value,
+                "allocator policy requires a scheduler policy");
   using logger_t = typename Tsm::logger_policy::type;
   using logger_dep_t =
       aux::conditional_t<aux::is_same<no_policy, logger_t>::value, aux::type_list<>, aux::type_list<logger_t &>>;
@@ -2256,13 +2291,21 @@ class sm {
   constexpr sm(sm &&) = default;
   constexpr sm &operator=(const sm &) = default;
   constexpr sm &operator=(sm &&) = default;
-  template <class TEvent, __BOOST_SML_REQUIRES(aux::is_base_of<TEvent, events_ids>::value)>
+  template <class TEvent>
   constexpr bool process_event(const TEvent &event) {
-    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(event, deps_, sub_sms_);
+    return dispatch_event(event, aux::type_wrapper<scheduler_t>{});
   }
-  template <class TEvent, __BOOST_SML_REQUIRES(!aux::is_base_of<TEvent, events_ids>::value)>
-  constexpr bool process_event(const TEvent &event) {
-    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(unexpected_event<_, TEvent>{event}, deps_, sub_sms_);
+  template <class TEvent, class T = scheduler_t, __BOOST_SML_REQUIRES(!aux::is_same<no_policy, T>::value)>
+  auto process_event_async(TEvent &&event) {
+    return async_dispatch<T>::process_event_async(*this, static_cast<TEvent &&>(event));
+  }
+  template <class T = scheduler_t, __BOOST_SML_REQUIRES(!aux::is_same<no_policy, T>::value)>
+  constexpr T &scheduler() noexcept {
+    return this->scheduler_;
+  }
+  template <class T = scheduler_t, __BOOST_SML_REQUIRES(!aux::is_same<no_policy, T>::value)>
+  constexpr const T &scheduler() const noexcept {
+    return this->scheduler_;
   }
   template <class T = aux::identity<sm_t>, class TVisitor, __BOOST_SML_REQUIRES(concepts::callable<void, TVisitor>::value)>
   constexpr void visit_current_states(const TVisitor &visitor) const {
@@ -2352,6 +2395,24 @@ class sm {
   }
 
  private:
+  template <class>
+  friend struct async_dispatch;
+  template <class TEvent>
+  constexpr bool dispatch_event(const TEvent &event, aux::type_wrapper<no_policy>) {
+    return process_event_impl(event);
+  }
+  template <class TEvent, class TScheduler>
+  bool dispatch_event(const TEvent &event, aux::type_wrapper<TScheduler>) {
+    return async_dispatch<TScheduler>::process_event(*this, event);
+  }
+  template <class TEvent, __BOOST_SML_REQUIRES(aux::is_base_of<TEvent, events_ids>::value)>
+  constexpr bool process_event_impl(const TEvent &event) {
+    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(event, deps_, sub_sms_);
+  }
+  template <class TEvent, __BOOST_SML_REQUIRES(!aux::is_base_of<TEvent, events_ids>::value)>
+  constexpr bool process_event_impl(const TEvent &event) {
+    return aux::get<sm_impl<Tsm>>(sub_sms_).process_event(unexpected_event<_, TEvent>{event}, deps_, sub_sms_);
+  }
   deps_t deps_;
   sub_sms_t sub_sms_;
 };
@@ -2633,6 +2694,10 @@ template <class T>
 using thread_safe = back::policies::thread_safe<T>;
 template <class T>
 using dispatch = back::policies::dispatch<T>;
+template <class T>
+using scheduler = back::policies::scheduler<T>;
+template <class T>
+using allocator = back::policies::allocator<T>;
 template <template <class...> class T>
 using defer_queue = back::policies::defer_queue<T>;
 template <template <class...> class T>

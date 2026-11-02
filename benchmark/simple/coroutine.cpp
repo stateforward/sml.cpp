@@ -6,7 +6,7 @@
 // http://www.boost.org/LICENSE_1_0.txt)
 //
 #include <boost/sml.hpp>
-#include <boost/sml/utility/co_sm.hpp>
+#include <boost/sml/utility/coroutine.hpp>
 
 #include "benchmark.hpp"
 
@@ -58,10 +58,8 @@ struct player {
 };
 
 int main() {
-#if BOOST_SML_UTILITY_CO_SM_ENABLED
-  using co_sm_t =
-      sml::utility::co_sm<player, sml::utility::policy::coroutine_scheduler<sml::utility::policy::inline_scheduler>>;
-  co_sm_t sm{};
+#if BOOST_SML_UTILITY_COROUTINE_ENABLED
+  sml::sm<player, sml::scheduler<sml::utility::policy::inline_scheduler>> sm{};
 
   benchmark_execution_speed([&] {
     for (auto i = 0; i < 1'000'000; ++i) {
